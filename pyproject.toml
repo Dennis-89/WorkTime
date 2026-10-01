@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "worktime"
+version = "0.1.0"
+description = "Local personal work time tracking"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/worktime"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
