@@ -352,3 +352,59 @@ def test_auto_start_rejects_naive_clock_without_write(context, zone):
         app.auto_start_if_needed()
     assert clock.calls == 1
     assert path.read_bytes() == before
+
+
+# WP-005: application access remains synchronized and uses one explicit clock.
+def test_correction_and_raw_audit_app_api(context):
+    from worktime.domain import WorkEvent
+    app, clock, path = context
+    original = app.start_work().day.events
+    corrected = (WorkEvent(EventType.WORK_START, BASE - timedelta(hours=1)),)
+    calls = clock.calls
+    result = app.correct_day(BASE.date(), iter(corrected))
+    assert result.work_date == BASE.date()
+    assert result.day.events == corrected
+    assert app.raw_events(BASE.date()) == original
+    assert clock.calls == calls
+    clock.now += timedelta(hours=8)
+    assert app.finish_work().day.calculate().net == timedelta(hours=9)
+
+
+def test_day_and_week_summaries_read_clock_once(context):
+    app, clock, path = context
+    app.start_work()
+    clock.now += timedelta(hours=2)
+    calls = clock.calls
+    summary = app.day_summary(BASE.date())
+    assert clock.calls == calls + 1
+    assert summary.net == timedelta(hours=2)
+    weekly = app.week_summary(BASE.date())
+    assert clock.calls == calls + 2
+    assert weekly.total_net == timedelta(hours=2)
+    clock.now += timedelta(days=1)
+    assert app.day_summary(BASE.date()).incomplete
+    assert app.week_summary(BASE.date()).total_net == timedelta()
+
+
+@pytest.mark.parametrize("paused,next_method", [(False, "finish_work"), (True, "resume_work"), (True, "finish_work")])
+def test_correction_only_followup_via_app(context, paused, next_method):
+    from worktime.domain import WorkEvent
+    app, clock, path = context
+    snapshot = [WorkEvent(EventType.WORK_START, BASE)]
+    if paused:
+        snapshot.append(WorkEvent(EventType.PAUSE_START, BASE + timedelta(hours=1)))
+    app.correct_day(BASE.date(), snapshot)
+    clock.now += timedelta(hours=8)
+    result = getattr(app, next_method)()
+    assert result.day.events[:-1] == tuple(snapshot)
+    assert app.raw_events(BASE.date()) == (result.day.events[-1],)
+
+
+def test_new_app_use_cases_reject_closed_app(context):
+    app, clock, path = context
+    app.close()
+    for method, args in ((app.today, ()), (app.day_summary, (BASE.date(),)),
+                         (app.week_summary, (BASE.date(),)), (app.raw_events, (BASE.date(),)),
+                         (app.correct_day, (BASE.date(), ()))):
+        with pytest.raises(RuntimeError, match="geschlossen"):
+            method(*args)

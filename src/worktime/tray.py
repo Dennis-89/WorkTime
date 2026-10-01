@@ -8,6 +8,7 @@ from threading import Event, RLock
 from worktime.app import WorkTimeApp, create_default_app
 from worktime.domain import WorkState
 from worktime.windows_session import WindowsSessionListener
+from worktime.ui import UIService
 
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,8 @@ class TrayAction(Enum):
     PAUSE = "Pause"
     RESUME = "Weiter"
     FINISH = "Feierabend"
+    DAY = "Tagesübersicht"
+    WEEK = "Wochenübersicht"
     QUIT = "Anwendung beenden"
 
 
@@ -29,12 +32,13 @@ class MenuState:
 
 def menu_state(state: WorkState) -> MenuState:
     """Pure presentation mapping; no desktop, clock or database access."""
-    return {
+    view = {
         WorkState.NOT_STARTED: MenuState("Noch nicht gestartet", (TrayAction.START, TrayAction.QUIT)),
         WorkState.WORKING: MenuState("Arbeit läuft", (TrayAction.PAUSE, TrayAction.FINISH, TrayAction.QUIT)),
         WorkState.PAUSED: MenuState("Pause", (TrayAction.RESUME, TrayAction.FINISH, TrayAction.QUIT)),
         WorkState.FINISHED: MenuState("Feierabend", (TrayAction.QUIT,)),
     }[state]
+    return MenuState(view.label, view.actions[:-1] + (TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT))
 
 
 def create_image():
@@ -71,6 +75,7 @@ class TrayController:
         self._view = None
         self._closed = False
         self._listener = None
+        self._ui = UIService(app)
 
     def initialize(self) -> None:
         """Run once before constructing the initial native tray menu."""
@@ -102,7 +107,7 @@ class TrayController:
             return menu_state(self._app.status().day.state)
         except Exception:
             logger.exception("WorkTime-Status konnte nicht gelesen werden.")
-            return MenuState("Status nicht verfügbar", (TrayAction.QUIT,))
+            return MenuState("Status nicht verfügbar", (TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT))
 
     def refresh(self, icon) -> None:
         with self._lock:
@@ -127,6 +132,9 @@ class TrayController:
             if self._closed:
                 return
             try:
+                if action in (TrayAction.DAY, TrayAction.WEEK):
+                    (self._ui.open_day if action is TrayAction.DAY else self._ui.open_week)()
+                    return
                 {
                     TrayAction.START: self._app.start_work,
                     TrayAction.PAUSE: self._app.pause_work,
@@ -150,14 +158,17 @@ class TrayController:
             self._stopped.set()
         # Never join a listener/setup thread while holding its callback lock.
         try:
-            if self._listener is not None:
-                self._listener.stop()
+            self._ui.stop()
         finally:
             try:
-                if icon is not None:
-                    icon.stop()
+                if self._listener is not None:
+                    self._listener.stop()
             finally:
-                self._app.close()
+                try:
+                    if icon is not None:
+                        icon.stop()
+                finally:
+                    self._app.close()
 
 
 def run_tray(app: WorkTimeApp) -> None:

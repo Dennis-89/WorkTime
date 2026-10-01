@@ -359,3 +359,209 @@ def test_context_exception_closes_without_undoing_prior_appends(db_path):
         store.list_work_dates()
     with SQLiteEventStore(db_path) as reopened:
         assert reopened.load_day(WORK_DATE).events == (event(EventType.WORK_START),)
+
+
+# WP-005 correction regression tests.
+def correction_rows(db_path):
+    with closing(sqlite3.connect(db_path)) as connection:
+        return (
+            connection.execute("SELECT * FROM workday_corrections ORDER BY work_date, revision").fetchall(),
+            connection.execute("SELECT * FROM workday_correction_events ORDER BY work_date, revision, sequence").fetchall(),
+        )
+
+
+def test_old_schema_opens_without_raw_migration_loss(db_path):
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("CREATE TABLE work_events (work_date TEXT, sequence INTEGER, "
+                           "event_type TEXT, timestamp TEXT, PRIMARY KEY(work_date, sequence))")
+        connection.execute("INSERT INTO work_events VALUES (?, 1, 'WORK_START', ?)",
+                           (WORK_DATE.isoformat(), BASE.isoformat()))
+        connection.commit()
+    before = rows(db_path)
+    with SQLiteEventStore(db_path) as store:
+        assert store.load_raw_events(WORK_DATE) == (event(EventType.WORK_START),)
+        assert store.load_day(WORK_DATE).events == store.load_raw_events(WORK_DATE)
+        assert store.list_correction_revisions(WORK_DATE) == ()
+    assert rows(db_path) == before
+
+
+def test_revisions_preserve_raw_and_earlier_snapshots(store, db_path):
+    original = (event(EventType.WORK_START), event(EventType.WORK_END, 480))
+    for item in original:
+        store.append_event(WORK_DATE, item)
+    before = rows(db_path)
+    first = (event(EventType.WORK_START, -30), original[1])
+    second = (event(EventType.WORK_START, -60), event(EventType.WORK_END, 510))
+    assert store.save_correction(WORK_DATE, iter(first)).events == first
+    old = correction_rows(db_path)
+    assert store.save_correction(WORK_DATE, second).events == second
+    assert store.list_correction_revisions(WORK_DATE) == (1, 2)
+    assert store.load_correction_revision(WORK_DATE, 1).events == first
+    assert store.load_correction_revision(WORK_DATE, 2).events == second
+    assert store.load_raw_events(WORK_DATE) == original
+    assert rows(db_path) == before
+    metadata, snapshots = correction_rows(db_path)
+    assert metadata[:1] == old[0]
+    assert [r for r in snapshots if r[1] == 1] == old[1]
+    with SQLiteEventStore(db_path) as reopened:
+        assert reopened.load_day(WORK_DATE).events == second
+        assert reopened.load_raw_events(WORK_DATE) == original
+
+
+@pytest.mark.parametrize("add_pause", [False, True])
+def test_raw_sequence_ignores_corrected_event_count(store, db_path, add_pause):
+    start = event(EventType.WORK_START)
+    pause = (event(EventType.PAUSE_START, 60), event(EventType.PAUSE_END, 90))
+    raw = (start,) if add_pause else (start,) + pause
+    corrected = (event(EventType.WORK_START, -30),) + (pause if add_pause else ())
+    for item in raw:
+        store.append_event(WORK_DATE, item)
+    before = rows(db_path)
+    store.save_correction(WORK_DATE, corrected)
+    assert rows(db_path) == before
+    end = event(EventType.WORK_END, 480)
+    assert store.append_event(WORK_DATE, end).events == corrected + (end,)
+    assert [r[1] for r in rows(db_path)] == list(range(1, len(raw) + 2))
+    assert store.load_raw_events(WORK_DATE) == raw + (end,)
+    assert correction_rows(db_path)[0][0][2] == len(raw)
+
+
+@pytest.mark.parametrize("paused,next_kind", [
+    (False, EventType.WORK_END), (True, EventType.PAUSE_END), (True, EventType.WORK_END),
+])
+def test_correction_only_day_then_first_raw_event(store, db_path, paused, next_kind):
+    snapshot = (event(EventType.WORK_START),)
+    if paused:
+        snapshot += (event(EventType.PAUSE_START, 60),)
+    store.save_correction(WORK_DATE, snapshot)
+    assert store.load_raw_events(WORK_DATE) == ()
+    assert store.list_work_dates() == (WORK_DATE,)
+    assert correction_rows(db_path)[0] == [(WORK_DATE.isoformat(), 1, 0)]
+    later = event(next_kind, 480)
+    effective = store.append_event(WORK_DATE, later)
+    assert effective.events == snapshot + (later,)
+    assert store.load_raw_events(WORK_DATE) == (later,)
+    assert rows(db_path) == [(WORK_DATE.isoformat(), 1, next_kind.value, later.timestamp.isoformat())]
+    assert store.load_day(WORK_DATE).state is (
+        WorkState.FINISHED if next_kind is EventType.WORK_END else WorkState.WORKING)
+    assert effective.calculate(BASE + timedelta(hours=8)).net == timedelta(hours=1 if paused else 8)
+    before = rows(db_path)
+    store.save_correction(WORK_DATE, snapshot)
+    assert rows(db_path) == before
+    assert store.load_raw_events(WORK_DATE) == (later,)
+
+
+def test_max_raw_sequence_and_revision_cutoff(store, db_path):
+    store.append_event(WORK_DATE, event(EventType.WORK_START))
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("INSERT INTO work_events VALUES (?, 5, 'PAUSE_START', ?)",
+                           (WORK_DATE.isoformat(), (BASE + timedelta(hours=1)).isoformat()))
+        connection.commit()
+    snapshot = (event(EventType.WORK_START, -30),)
+    store.save_correction(WORK_DATE, snapshot)
+    store.append_event(WORK_DATE, event(EventType.WORK_END, 480))
+    assert [r[1] for r in rows(db_path)] == [1, 5, 6]
+    assert store.load_day(WORK_DATE).events == snapshot + (event(EventType.WORK_END, 480),)
+    store.save_correction(WORK_DATE, snapshot)
+    assert store.load_day(WORK_DATE).events == snapshot
+    assert [r[2] for r in correction_rows(db_path)[0]] == [5, 6]
+
+
+@pytest.mark.parametrize("bad", [
+    (), (event(EventType.WORK_END),),
+    (event(EventType.WORK_START), event(EventType.WORK_START, 60)),
+    (event(EventType.WORK_START), event(EventType.WORK_END, -1)),
+])
+def test_invalid_correction_is_atomic(store, db_path, bad):
+    store.append_event(WORK_DATE, event(EventType.WORK_START))
+    before = rows(db_path), correction_rows(db_path)
+    with pytest.raises(DomainError):
+        store.save_correction(WORK_DATE, bad)
+    assert (rows(db_path), correction_rows(db_path)) == before
+    store.save_correction(WORK_DATE, (event(EventType.WORK_START),))
+    assert store.list_correction_revisions(WORK_DATE) == (1,)
+
+
+def test_partial_snapshot_failure_rolls_back_revision_number(store, db_path):
+    store.append_event(WORK_DATE, event(EventType.WORK_START))
+    snapshot = (event(EventType.WORK_START, -60), event(EventType.WORK_END, 480))
+    store.save_correction(WORK_DATE, snapshot)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("""
+            CREATE TRIGGER fail_snapshot AFTER INSERT ON workday_correction_events
+            WHEN NEW.sequence = 2 BEGIN SELECT RAISE(FAIL, 'snapshot failure'); END
+        """)
+        connection.commit()
+    before = rows(db_path), correction_rows(db_path)
+    with pytest.raises(sqlite3.IntegrityError, match="snapshot failure"):
+        store.save_correction(WORK_DATE, snapshot)
+    assert (rows(db_path), correction_rows(db_path)) == before
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("DROP TRIGGER fail_snapshot")
+        connection.commit()
+    store.save_correction(WORK_DATE, snapshot)
+    assert store.list_correction_revisions(WORK_DATE) == (1, 2)
+
+
+def test_failed_append_validates_effective_snapshot_only(store, db_path):
+    store.save_correction(WORK_DATE, (event(EventType.WORK_START),))
+    before = rows(db_path), correction_rows(db_path)
+    with pytest.raises(DomainError):
+        store.append_event(WORK_DATE, event(EventType.PAUSE_END, 60))
+    assert (rows(db_path), correction_rows(db_path)) == before
+    store.append_event(WORK_DATE, event(EventType.WORK_END, 480))
+    assert rows(db_path)[0][1] == 1
+
+
+def test_dates_union_and_missing_revision(store):
+    for day in (date(2026, 10, 3), WORK_DATE):
+        store.save_correction(day, (event(EventType.WORK_START),))
+    store.append_event(WORK_DATE, event(EventType.WORK_END, 480))
+    store.append_event(date(2026, 10, 2), event(EventType.WORK_START))
+    assert store.list_work_dates() == (WORK_DATE, date(2026, 10, 2), date(2026, 10, 3))
+    with pytest.raises(LookupError):
+        store.load_correction_revision(WORK_DATE, 99)
+
+
+def test_concurrent_append_and_correction_are_serialized(db_path):
+    with SQLiteEventStore(db_path) as store:
+        store.append_event(WORK_DATE, event(EventType.WORK_START))
+    barrier = Barrier(2, timeout=10)
+    snapshot = (event(EventType.WORK_START, -30),)
+
+    def operation(correct):
+        with SQLiteEventStore(db_path) as store:
+            barrier.wait()
+            if correct:
+                store.save_correction(WORK_DATE, snapshot)
+            else:
+                store.append_event(WORK_DATE, event(EventType.WORK_END, 480))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(operation, (True, False)))
+    with SQLiteEventStore(db_path) as store:
+        cutoff = correction_rows(db_path)[0][0][2]
+        expected = snapshot + ((event(EventType.WORK_END, 480),) if cutoff == 1 else ())
+        assert cutoff in (1, 2)
+        assert store.load_day(WORK_DATE).events == expected
+        assert store.load_raw_events(WORK_DATE) == (
+            event(EventType.WORK_START), event(EventType.WORK_END, 480))
+        assert store.list_correction_revisions(WORK_DATE) == (1,)
+
+
+def test_pause_times_and_running_paused_day_can_be_corrected(store, db_path):
+    raw = (event(EventType.WORK_START), event(EventType.PAUSE_START, 60))
+    for item in raw:
+        store.append_event(WORK_DATE, item)
+    before = rows(db_path)
+    corrected = (event(EventType.WORK_START, -30), event(EventType.PAUSE_START, 90))
+    assert store.save_correction(WORK_DATE, corrected).state is WorkState.PAUSED
+    finished = store.append_event(WORK_DATE, event(EventType.WORK_END, 120))
+    assert finished.calculate().pause == timedelta(minutes=30)
+    assert finished.calculate().net == timedelta(hours=2)
+    assert rows(db_path)[:2] == before
+    shifted = (corrected[0], event(EventType.PAUSE_START, 30),
+               event(EventType.PAUSE_END, 45), event(EventType.WORK_END, 150))
+    store.save_correction(WORK_DATE, shifted)
+    assert store.load_day(WORK_DATE).calculate().pause == timedelta(minutes=15)
+    assert store.load_day(WORK_DATE).calculate().net == timedelta(minutes=165)
+    assert store.load_raw_events(WORK_DATE) == raw + (event(EventType.WORK_END, 120),)

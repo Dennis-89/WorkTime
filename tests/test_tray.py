@@ -18,10 +18,10 @@ from worktime.windows_session import dispatch_session_event
 
 
 MENU_CASES = [
-    (WorkState.NOT_STARTED, "Noch nicht gestartet", (TrayAction.START, TrayAction.QUIT)),
-    (WorkState.WORKING, "Arbeit läuft", (TrayAction.PAUSE, TrayAction.FINISH, TrayAction.QUIT)),
-    (WorkState.PAUSED, "Pause", (TrayAction.RESUME, TrayAction.FINISH, TrayAction.QUIT)),
-    (WorkState.FINISHED, "Feierabend", (TrayAction.QUIT,)),
+    (WorkState.NOT_STARTED, "Noch nicht gestartet", (TrayAction.START, TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT)),
+    (WorkState.WORKING, "Arbeit läuft", (TrayAction.PAUSE, TrayAction.FINISH, TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT)),
+    (WorkState.PAUSED, "Pause", (TrayAction.RESUME, TrayAction.FINISH, TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT)),
+    (WorkState.FINISHED, "Feierabend", (TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT)),
 ]
 
 
@@ -141,7 +141,7 @@ def test_status_failure_leaves_quit_available(caplog):
     app.status.side_effect = OSError("Lesefehler")
     view = TrayController(app).view()
     assert view.label == "Status nicht verfügbar"
-    assert view.actions == (TrayAction.QUIT,)
+    assert view.actions == (TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT)
     assert "Status konnte nicht gelesen" in caplog.text
 
 
@@ -169,13 +169,13 @@ def test_real_app_finish_keeps_tray_alive_and_hides_start(tmp_path):
         controller.perform(TrayAction.START, icon)
         controller.perform(TrayAction.FINISH, icon)
         assert app.status().day.state is WorkState.FINISHED
-        assert [item.text for item in tuple(icon.menu)] == ["Feierabend", "Anwendung beenden"]
+        assert [item.text for item in tuple(icon.menu)] == ["Feierabend", "Tagesübersicht", "Wochenübersicht", "Anwendung beenden"]
         icon.stop.assert_not_called()
         before = path.read_bytes()
         controller.perform(TrayAction.START, icon)
         assert path.read_bytes() == before
         icon.notify.assert_called_once()
-        assert controller.view().actions == (TrayAction.QUIT,)
+        assert controller.view().actions == (TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT)
     finally:
         controller.close(icon)
 
@@ -189,10 +189,10 @@ def test_refresh_detects_next_local_day_without_auto_start(tmp_path):
         app.start_work()
         app.finish_work()
         controller.refresh(icon)
-        assert [item.text for item in tuple(icon.menu)] == ["Feierabend", "Anwendung beenden"]
+        assert [item.text for item in tuple(icon.menu)] == ["Feierabend", "Tagesübersicht", "Wochenübersicht", "Anwendung beenden"]
         now += timedelta(hours=2)
         controller.refresh(icon)
-        assert [item.text for item in tuple(icon.menu)] == ["Noch nicht gestartet", "Arbeit starten", "Anwendung beenden"]
+        assert [item.text for item in tuple(icon.menu)] == ["Noch nicht gestartet", "Arbeit starten", "Tagesübersicht", "Wochenübersicht", "Anwendung beenden"]
         assert app.status().day.events == ()
     finally:
         controller.close(icon)
@@ -283,7 +283,7 @@ def test_startup_auto_start_precedes_initial_menu_and_listener(tmp_path, monkeyp
     icon = Mock()
 
     def create_icon(name, image, title, menu):
-        assert [item.text for item in tuple(menu)] == ["Arbeit läuft", "Pause", "Feierabend", "Anwendung beenden"]
+        assert [item.text for item in tuple(menu)] == ["Arbeit läuft", "Pause", "Feierabend", "Tagesübersicht", "Wochenübersicht", "Anwendung beenden"]
         assert app.status().day.state is WorkState.WORKING
         assert not session_listeners
         return icon
@@ -305,7 +305,7 @@ def test_logon_unlock_delegate_once_and_refresh(code, session_listeners):
     try:
         session_listeners[0].emit(code)
         assert app.mock_calls == [call.auto_start_if_needed(), call.status()]
-        assert [item.text for item in tuple(icon.menu)] == ["Arbeit läuft", "Pause", "Feierabend", "Anwendung beenden"]
+        assert [item.text for item in tuple(icon.menu)] == ["Arbeit läuft", "Pause", "Feierabend", "Tagesübersicht", "Wochenübersicht", "Anwendung beenden"]
     finally:
         controller.close(icon)
 
@@ -359,15 +359,15 @@ def test_next_day_refresh_is_manual_fallback_until_unlock(tmp_path, session_list
     controller.start_listener(icon)
     try:
         session_listeners[0].emit(8)
-        assert controller.view().actions == (TrayAction.QUIT,)
+        assert controller.view().actions == (TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT)
         now += timedelta(days=1)
         controller.refresh(icon)
         assert app.status().day.events == ()
-        assert controller.view().actions == (TrayAction.START, TrayAction.QUIT)
+        assert controller.view().actions == (TrayAction.START, TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT)
         session_listeners[0].emit(8)
         assert app.status().day.state is WorkState.WORKING
         assert len(app.status().day.events) == 1
-        assert [item.text for item in tuple(icon.menu)][1:] == ["Pause", "Feierabend", "Anwendung beenden"]
+        assert [item.text for item in tuple(icon.menu)][1:] == ["Pause", "Feierabend", "Tagesübersicht", "Wochenübersicht", "Anwendung beenden"]
     finally:
         controller.close(icon)
 
@@ -491,3 +491,51 @@ def test_listener_stop_failure_still_closes_tray_and_app(session_listeners):
         controller.close(icon)
     icon.stop.assert_called_once_with()
     assert app.mock_calls == [call.close()]
+
+
+@pytest.fixture(autouse=True)
+def ui_services(monkeypatch):
+    services = []
+    def factory(app):
+        service = Mock()
+        services.append(service)
+        return service
+    monkeypatch.setattr(tray_module, "UIService", factory)
+    return services
+
+
+@pytest.mark.parametrize("action,method", [(TrayAction.DAY, "open_day"), (TrayAction.WEEK, "open_week")])
+def test_overview_actions_only_open_ui(action, method, ui_services):
+    app = fake_app()
+    controller = TrayController(app)
+    icon = Mock()
+    controller.perform(action, icon)
+    assert ui_services[0].mock_calls == [getattr(call, method)()]
+    assert app.mock_calls == []
+    icon.stop.assert_not_called()
+
+
+def test_quit_stops_ui_then_session_then_tray_then_app(ui_services, session_listeners):
+    app, icon = fake_app(), Mock()
+    controller = TrayController(app)
+    controller.start_listener(icon)
+    order = []
+    ui_services[0].stop.side_effect = lambda: order.append("ui")
+    session_listeners[0].stop.side_effect = lambda: order.append("session")
+    icon.stop.side_effect = lambda: order.append("tray")
+    app.close.side_effect = lambda: order.append("app")
+    controller.close(icon)
+    assert order == ["ui", "session", "tray", "app"]
+    assert app.mock_calls == [call.close()]
+
+
+def test_ui_stop_failure_still_closes_other_resources(ui_services, session_listeners):
+    app, icon = fake_app(), Mock()
+    controller = TrayController(app)
+    controller.start_listener(icon)
+    ui_services[0].stop.side_effect = RuntimeError("UI shutdown failed")
+    with pytest.raises(RuntimeError, match="UI shutdown"):
+        controller.close(icon)
+    session_listeners[0].stop.assert_called_once_with()
+    icon.stop.assert_called_once_with()
+    app.close.assert_called_once_with()

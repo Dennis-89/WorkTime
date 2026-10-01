@@ -234,7 +234,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ### WP-004: Windows-Start und Unlock integrieren
 
-- Status: Prüfung
+- Status: abgeschlossen
 - Projektschritt: PS-03
 - Ziel: Noch nicht gestartete Arbeitstage durch Windows-Login/Unlock automatisch starten.
 - Abhängigkeiten: WP-003.
@@ -242,7 +242,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ### WP-005: Tages-, Wochen- und Korrekturansicht implementieren
 
-- Status: geplant
+- Status: Prüfung
 - Projektschritt: PS-04
 - Ziel: Zeiten prüfen, zusammenfassen und manuell korrigieren.
 - Abhängigkeiten: WP-004.
@@ -267,7 +267,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ## Fortschritt
 
-- Aktuelles Arbeitspaket: WP-004
+- Aktuelles Arbeitspaket: WP-005
 - Letzter geprüfter Stand: Basis-Commit cb7c544
 - Blocker: keine
 - Nächster Schritt: WP-001 durch Codex implementieren und Nachweise prüfen.

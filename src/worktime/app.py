@@ -1,6 +1,6 @@
 """Application use cases: clock, logical workday selection and persistence."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -8,6 +8,7 @@ from threading import RLock
 
 from worktime.domain import DomainError, EventType, WorkDay, WorkEvent, WorkState
 from worktime.storage import SQLiteEventStore
+from worktime.summary import DaySummary, WeekSummary, summarize_day, summarize_week
 
 
 def local_now() -> datetime:
@@ -101,6 +102,36 @@ class WorkTimeApp:
         """Release application access without recording any domain event."""
         with self._operations:
             self._closed = True
+
+    def today(self) -> date:
+        with self._operations:
+            return self._now().date()
+
+    def day_summary(self, work_date: date) -> DaySummary:
+        with self._operations:
+            now = self._now()
+            with SQLiteEventStore(self._database_path) as store:
+                return summarize_day(work_date, store.load_day(work_date), as_of=now)
+
+    def week_summary(self, anchor_date: date) -> WeekSummary:
+        with self._operations:
+            now = self._now()
+            with SQLiteEventStore(self._database_path) as store:
+                return summarize_week(anchor_date, store.load_day, as_of=now)
+
+    def correct_day(self, work_date: date, events: Iterable[WorkEvent]) -> AppStatus:
+        with self._operations:
+            if self._closed:
+                raise RuntimeError("WorkTime ist bereits geschlossen.")
+            with SQLiteEventStore(self._database_path) as store:
+                return AppStatus(work_date, store.save_correction(work_date, events))
+
+    def raw_events(self, work_date: date) -> tuple[WorkEvent, ...]:
+        with self._operations:
+            if self._closed:
+                raise RuntimeError("WorkTime ist bereits geschlossen.")
+            with SQLiteEventStore(self._database_path) as store:
+                return store.load_raw_events(work_date)
 
 
 def create_default_app(
