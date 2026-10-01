@@ -218,7 +218,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ### WP-002: SQLite-Persistenz implementieren
 
-- Status: Prüfung
+- Status: abgeschlossen
 - Projektschritt: PS-01
 - Ziel: Fachereignisse dauerhaft lokal speichern und wiederherstellen.
 - Abhängigkeiten: WP-001.
@@ -226,7 +226,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ### WP-003: Tray-Steuerung implementieren
 
-- Status: geplant
+- Status: Prüfung
 - Projektschritt: PS-02
 - Ziel: Pause, Weiter und Feierabend über ein Windows-Tray-Symbol bedienen.
 - Abhängigkeiten: WP-002.
@@ -267,7 +267,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ## Fortschritt
 
-- Aktuelles Arbeitspaket: WP-002
+- Aktuelles Arbeitspaket: WP-003
 - Letzter geprüfter Stand: Basis-Commit cb7c544
 - Blocker: keine
 - Nächster Schritt: WP-001 durch Codex implementieren und Nachweise prüfen.
