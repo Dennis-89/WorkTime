@@ -245,3 +245,110 @@ def test_callbacks_can_use_application_from_a_different_thread(context):
         assert pool.submit(app.status).result().day.state is WorkState.WORKING
         assert pool.submit(app.pause_work).result().day.state is WorkState.PAUSED
     assert saved(path).events[-1].kind is EventType.PAUSE_START
+
+
+def test_auto_start_empty_day_exactly_one_aware_event_and_one_clock_read(context):
+    app, clock, path = context
+    result = app.auto_start_if_needed()
+    assert clock.calls == 1
+    assert result.work_date == BASE.date()
+    assert result.day.state is WorkState.WORKING
+    assert len(result.day.events) == 1
+    assert result.day.events[0].kind is EventType.WORK_START
+    assert result.day.events[0].timestamp.isoformat() == BASE.isoformat()
+    before = path.read_bytes()
+    for expected_calls in range(2, 6):
+        assert app.auto_start_if_needed().day.events == result.day.events
+        assert clock.calls == expected_calls
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("prefix,state", [
+    (("start_work",), WorkState.WORKING),
+    (("start_work", "pause_work"), WorkState.PAUSED),
+    (("start_work", "finish_work"), WorkState.FINISHED),
+])
+def test_auto_start_preserves_started_same_day(context, prefix, state):
+    app, clock, path = context
+    for method in prefix:
+        getattr(app, method)()
+    events = saved(path).events
+    before = path.read_bytes()
+    calls = clock.calls
+    clock.now += timedelta(hours=1)
+    result = app.auto_start_if_needed()
+    assert clock.calls == calls + 1
+    assert result.day.state is state
+    assert result.day.events == events
+    assert path.read_bytes() == before
+
+
+def test_auto_start_finished_previous_day_uses_local_not_utc_date(context):
+    app, clock, path = context
+    app.start_work()
+    app.finish_work()
+    old_events = saved(path).events
+    clock.now = BASE.replace(hour=0, minute=15) + timedelta(days=1)
+    assert clock.now.astimezone(timezone.utc).date() == BASE.date()
+    calls = clock.calls
+    result = app.auto_start_if_needed()
+    assert clock.calls == calls + 1
+    assert result.work_date == clock.now.date()
+    assert result.day.state is WorkState.WORKING
+    assert len(result.day.events) == 1
+    assert result.day.events[0].timestamp.isoformat() == clock.now.isoformat()
+    assert saved(path).events == old_events
+    assert len(saved(path, clock.now.date()).events) == 1
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_auto_start_preserves_open_previous_day_after_restart(context, paused):
+    app, clock, path = context
+    app.start_work()
+    if paused:
+        app.pause_work()
+    events = saved(path).events
+    app.close()
+    clock.now += timedelta(days=1)
+    reopened = WorkTimeApp(path, clock=clock)
+    try:
+        result = reopened.auto_start_if_needed()
+        assert result.work_date == BASE.date()
+        assert result.day.state is (WorkState.PAUSED if paused else WorkState.WORKING)
+        assert result.day.events == events
+        assert saved(path, clock.now.date()).events == ()
+    finally:
+        reopened.close()
+
+
+def test_concurrent_auto_starts_on_one_app_write_once(context):
+    app, clock, path = context
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(lambda _: app.auto_start_if_needed(), range(12)))
+    assert clock.calls == 12
+    assert all(result.day.state is WorkState.WORKING for result in results)
+    assert len(saved(path).events) == 1
+
+
+def test_auto_start_does_not_reread_clock_across_midnight(tmp_path):
+    times = [BASE.replace(hour=23, minute=59), BASE + timedelta(days=1)]
+    clock = Mock(side_effect=times)
+    app = WorkTimeApp(tmp_path / "clock.db", clock=clock)
+    try:
+        result = app.auto_start_if_needed()
+        clock.assert_called_once_with()
+        assert result.work_date == times[0].date()
+        assert result.day.events[0].timestamp == times[0]
+    finally:
+        app.close()
+
+
+@pytest.mark.parametrize("zone", [None, NoOffset()])
+def test_auto_start_rejects_naive_clock_without_write(context, zone):
+    app, clock, path = context
+    before = path.read_bytes()
+    clock.now = BASE.replace(tzinfo=zone)
+    with pytest.raises(DomainError):
+        app.auto_start_if_needed()
+    assert clock.calls == 1
+    assert path.read_bytes() == before

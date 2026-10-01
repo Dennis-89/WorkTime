@@ -226,7 +226,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ### WP-003: Tray-Steuerung implementieren
 
-- Status: Prüfung
+- Status: abgeschlossen
 - Projektschritt: PS-02
 - Ziel: Pause, Weiter und Feierabend über ein Windows-Tray-Symbol bedienen.
 - Abhängigkeiten: WP-002.
@@ -234,7 +234,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ### WP-004: Windows-Start und Unlock integrieren
 
-- Status: geplant
+- Status: Prüfung
 - Projektschritt: PS-03
 - Ziel: Noch nicht gestartete Arbeitstage durch Windows-Login/Unlock automatisch starten.
 - Abhängigkeiten: WP-003.
@@ -267,7 +267,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ## Fortschritt
 
-- Aktuelles Arbeitspaket: WP-003
+- Aktuelles Arbeitspaket: WP-004
 - Letzter geprüfter Stand: Basis-Commit cb7c544
 - Blocker: keine
 - Nächster Schritt: WP-001 durch Codex implementieren und Nachweise prüfen.

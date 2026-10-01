@@ -7,6 +7,7 @@ from threading import Event, RLock
 
 from worktime.app import WorkTimeApp, create_default_app
 from worktime.domain import WorkState
+from worktime.windows_session import WindowsSessionListener
 
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,30 @@ class TrayController:
         self._lock = RLock()
         self._view = None
         self._closed = False
+        self._listener = None
+
+    def initialize(self) -> None:
+        """Run once before constructing the initial native tray menu."""
+        with self._lock:
+            self._app.auto_start_if_needed()
+
+    def start_listener(self, icon) -> None:
+        self._listener = WindowsSessionListener(lambda: self.session_auto_start(icon))
+        self._listener.start()
+
+    def session_auto_start(self, icon) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            try:
+                self._app.auto_start_if_needed()
+            except Exception as error:
+                logger.exception("Automatischer WorkTime-Start fehlgeschlagen.")
+                try:
+                    icon.notify(f"Automatischer Start nicht möglich: {error}", "WorkTime")
+                except Exception:
+                    logger.exception("WorkTime-Fehlerbenachrichtigung fehlgeschlagen.")
+            self.refresh(icon)
 
     def view(self) -> MenuState:
         if self._closed:
@@ -99,6 +124,8 @@ class TrayController:
             self.close(icon)
             return
         with self._lock:
+            if self._closed:
+                return
             try:
                 {
                     TrayAction.START: self._app.start_work,
@@ -116,15 +143,21 @@ class TrayController:
             self.refresh(icon)
 
     def close(self, icon=None) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._stopped.set()
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._stopped.set()
+        # Never join a listener/setup thread while holding its callback lock.
         try:
-            if icon is not None:
-                icon.stop()
+            if self._listener is not None:
+                self._listener.stop()
         finally:
-            self._app.close()
+            try:
+                if icon is not None:
+                    icon.stop()
+            finally:
+                self._app.close()
 
 
 def run_tray(app: WorkTimeApp) -> None:
@@ -133,7 +166,9 @@ def run_tray(app: WorkTimeApp) -> None:
     try:
         from pystray import Icon
 
+        controller.initialize()
         icon = Icon("WorkTime", create_image(), "WorkTime", create_menu(controller.view(), controller))
+        controller.start_listener(icon)
         icon.run(setup=controller.setup)
     finally:
         controller.close(icon)

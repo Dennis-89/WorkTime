@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 import runpy
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 
@@ -12,6 +14,7 @@ from worktime.tray import (
     TrayAction, TrayController, create_image, create_menu, menu_state, run_tray,
 )
 import worktime.tray as tray_module
+from worktime.windows_session import dispatch_session_event
 
 
 MENU_CASES = [
@@ -26,6 +29,30 @@ def fake_app(state=WorkState.WORKING):
     app = Mock(spec=WorkTimeApp)
     app.status.return_value = SimpleNamespace(day=SimpleNamespace(state=state))
     return app
+
+
+class FakeSessionListener:
+    def __init__(self, callback):
+        self.callback = callback
+        self.start = Mock()
+        self.stop = Mock()
+
+    def emit(self, code):
+        dispatch_session_event(code, self.callback)
+
+
+@pytest.fixture(autouse=True)
+def session_listeners(monkeypatch):
+    """Existing and new tray tests must never register on the real desktop."""
+    created = []
+
+    def factory(callback):
+        listener = FakeSessionListener(callback)
+        created.append(listener)
+        return listener
+
+    monkeypatch.setattr(tray_module, "WindowsSessionListener", factory)
+    return created
 
 
 @pytest.mark.parametrize("state,label,actions", MENU_CASES)
@@ -216,7 +243,7 @@ def test_run_path_closes_resources_without_native_tray(monkeypatch, fails):
     assert callable(icon.run.call_args.kwargs["setup"])
     app.close.assert_called_once_with()
     icon.stop.assert_called_once_with()
-    assert [c for c in app.mock_calls if c != call.status()] == [call.close()]
+    assert [c for c in app.mock_calls if c != call.status()] == [call.auto_start_if_needed(), call.close()]
 
 
 def test_icon_construction_failure_closes_app(monkeypatch):
@@ -245,3 +272,222 @@ def test_main_uses_default_factory_and_tray_runner(monkeypatch):
     tray_module.main()
     factory.assert_called_once_with()
     runner.assert_called_once_with(app)
+
+
+def test_startup_auto_start_precedes_initial_menu_and_listener(tmp_path, monkeypatch, session_listeners):
+    import pystray
+
+    now = datetime(2026, 10, 1, 8, tzinfo=timezone.utc)
+    path = tmp_path / "startup.db"
+    app = WorkTimeApp(path, clock=lambda: now)
+    icon = Mock()
+
+    def create_icon(name, image, title, menu):
+        assert [item.text for item in tuple(menu)] == ["Arbeit läuft", "Pause", "Feierabend", "Anwendung beenden"]
+        assert app.status().day.state is WorkState.WORKING
+        assert not session_listeners
+        return icon
+
+    monkeypatch.setattr(pystray, "Icon", create_icon)
+    run_tray(app)
+    session_listeners[0].start.assert_called_once_with()
+    session_listeners[0].stop.assert_called_once_with()
+    with SQLiteEventStore(path) as store:
+        assert [event.kind for event in store.load_day(now.date()).events] == [EventType.WORK_START]
+
+
+@pytest.mark.parametrize("code", [5, 8])
+def test_logon_unlock_delegate_once_and_refresh(code, session_listeners):
+    app = fake_app()
+    icon = Mock()
+    controller = TrayController(app)
+    controller.start_listener(icon)
+    try:
+        session_listeners[0].emit(code)
+        assert app.mock_calls == [call.auto_start_if_needed(), call.status()]
+        assert [item.text for item in tuple(icon.menu)] == ["Arbeit läuft", "Pause", "Feierabend", "Anwendung beenden"]
+    finally:
+        controller.close(icon)
+
+
+@pytest.mark.parametrize("code", [1, 2, 3, 4, 6, 7, 9, 15])
+def test_lock_and_other_sessions_do_not_call_app_or_refresh(code, session_listeners):
+    app = fake_app()
+    icon = Mock()
+    controller = TrayController(app)
+    controller.start_listener(icon)
+    try:
+        session_listeners[0].emit(code)
+        assert app.mock_calls == []
+        assert icon.mock_calls == []
+        assert "menu" not in icon.__dict__
+    finally:
+        controller.close(icon)
+
+
+def test_lock_unlock_keep_continuous_work_without_pause(tmp_path, session_listeners):
+    now = datetime(2026, 10, 1, 8, tzinfo=timezone.utc)
+    path = tmp_path / "continuous.db"
+    app = WorkTimeApp(path, clock=lambda: now)
+    controller = TrayController(app)
+    icon = Mock()
+    controller.initialize()
+    controller.start_listener(icon)
+    try:
+        now = now.replace(hour=9)
+        before = path.read_bytes()
+        session_listeners[0].emit(7)
+        assert path.read_bytes() == before
+        now = now.replace(hour=10, minute=30)
+        session_listeners[0].emit(8)
+        day = app.status().day
+        assert [event.kind for event in day.events] == [EventType.WORK_START]
+        assert day.calculate(now).net == timedelta(hours=2, minutes=30)
+        assert day.calculate(now).pause == timedelta()
+        assert path.read_bytes() == before
+    finally:
+        controller.close(icon)
+
+
+def test_next_day_refresh_is_manual_fallback_until_unlock(tmp_path, session_listeners):
+    now = datetime(2026, 10, 1, 8, tzinfo=timezone.utc)
+    app = WorkTimeApp(tmp_path / "next.db", clock=lambda: now)
+    controller = TrayController(app)
+    icon = Mock()
+    controller.initialize()
+    app.finish_work()
+    controller.start_listener(icon)
+    try:
+        session_listeners[0].emit(8)
+        assert controller.view().actions == (TrayAction.QUIT,)
+        now += timedelta(days=1)
+        controller.refresh(icon)
+        assert app.status().day.events == ()
+        assert controller.view().actions == (TrayAction.START, TrayAction.QUIT)
+        session_listeners[0].emit(8)
+        assert app.status().day.state is WorkState.WORKING
+        assert len(app.status().day.events) == 1
+        assert [item.text for item in tuple(icon.menu)][1:] == ["Pause", "Feierabend", "Anwendung beenden"]
+    finally:
+        controller.close(icon)
+
+
+def test_close_stops_listener_before_tray_and_app_without_lock_deadlock(session_listeners):
+    app = fake_app()
+    icon = Mock()
+    controller = TrayController(app)
+    controller.start_listener(icon)
+    order = []
+
+    def stop_listener():
+        order.append("listener")
+        # A callback already queued at shutdown must be able to take the lock,
+        # see _closed and return while close waits for its thread.
+        thread = Thread(target=session_listeners[0].callback, daemon=True)
+        thread.start()
+        thread.join(timeout=2)
+        assert not thread.is_alive(), "callback was blocked by close's lock"
+
+    session_listeners[0].stop.side_effect = stop_listener
+    icon.stop.side_effect = lambda: order.append("tray")
+    app.close.side_effect = lambda: order.append("app")
+    controller.close(icon)
+    controller.close(icon)
+    assert order == ["listener", "tray", "app"]
+    assert app.mock_calls == [call.close()]
+
+
+def test_manual_action_and_session_callback_are_serialized(session_listeners):
+    app = fake_app()
+    icon = Mock()
+    controller = TrayController(app)
+    controller.start_listener(icon)
+    entered, release, callback_entered = Event(), Event(), Event()
+
+    def pause():
+        entered.set()
+        assert release.wait(2)
+
+    def unlock():
+        callback_entered.set()
+        session_listeners[0].emit(8)
+
+    app.pause_work.side_effect = pause
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            manual = pool.submit(controller.perform, TrayAction.PAUSE, icon)
+            assert entered.wait(2)
+            automatic = pool.submit(unlock)
+            try:
+                assert callback_entered.wait(2)
+                app.auto_start_if_needed.assert_not_called()
+            finally:
+                release.set()
+            manual.result(timeout=2)
+            automatic.result(timeout=2)
+        assert app.mock_calls == [call.pause_work(), call.status(), call.auto_start_if_needed(), call.status()]
+    finally:
+        controller.close(icon)
+
+
+def test_startup_auto_failure_closes_app_before_icon_creation(monkeypatch, session_listeners):
+    import pystray
+
+    app = fake_app()
+    app.auto_start_if_needed.side_effect = DomainError("invalid clock")
+    factory = Mock()
+    monkeypatch.setattr(pystray, "Icon", factory)
+    with pytest.raises(DomainError, match="invalid clock"):
+        run_tray(app)
+    factory.assert_not_called()
+    assert not session_listeners
+    app.close.assert_called_once_with()
+
+
+def test_listener_start_failure_cleans_tray_and_keeps_valid_start(tmp_path, monkeypatch):
+    import pystray
+
+    path = tmp_path / "failure.db"
+    now = datetime(2026, 10, 1, 8, tzinfo=timezone.utc)
+    app = WorkTimeApp(path, clock=lambda: now)
+    listener = FakeSessionListener(Mock())
+    listener.start.side_effect = OSError("WTS unavailable")
+    monkeypatch.setattr(tray_module, "WindowsSessionListener", lambda cb: listener)
+    icon = Mock()
+    monkeypatch.setattr(pystray, "Icon", Mock(return_value=icon))
+    with pytest.raises(OSError, match="WTS unavailable"):
+        run_tray(app)
+    listener.stop.assert_called_once_with()
+    icon.stop.assert_called_once_with()
+    icon.run.assert_not_called()
+    with pytest.raises(RuntimeError, match="geschlossen"):
+        app.status()
+    with SQLiteEventStore(path) as store:
+        assert [event.kind for event in store.load_day(now.date()).events] == [EventType.WORK_START]
+
+
+def test_session_auto_failure_is_reported_without_closing_or_extra_action(session_listeners):
+    app = fake_app()
+    app.auto_start_if_needed.side_effect = DomainError("invalid clock")
+    controller = TrayController(app)
+    icon = Mock()
+    controller.start_listener(icon)
+    try:
+        session_listeners[0].emit(8)
+        icon.notify.assert_called_once()
+        icon.stop.assert_not_called()
+        assert app.mock_calls == [call.auto_start_if_needed(), call.status()]
+    finally:
+        controller.close(icon)
+
+
+def test_listener_stop_failure_still_closes_tray_and_app(session_listeners):
+    app = fake_app()
+    controller = TrayController(app)
+    icon = Mock()
+    controller.start_listener(icon)
+    session_listeners[0].stop.side_effect = RuntimeError("listener failed")
+    with pytest.raises(RuntimeError, match="listener failed"):
+        controller.close(icon)
+    icon.stop.assert_called_once_with()
+    assert app.mock_calls == [call.close()]

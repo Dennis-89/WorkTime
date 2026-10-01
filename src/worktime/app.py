@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+from threading import RLock
 
 from worktime.domain import DomainError, EventType, WorkDay, WorkEvent, WorkState
 from worktime.storage import SQLiteEventStore
@@ -31,6 +32,7 @@ class WorkTimeApp:
         self._database_path = Path(database_path)
         self._clock = clock
         self._closed = False
+        self._operations = RLock()
         with SQLiteEventStore(self._database_path):
             pass
 
@@ -53,17 +55,35 @@ class WorkTimeApp:
         return AppStatus(today, store.load_day(today))
 
     def status(self) -> AppStatus:
-        now = self._now()
-        with SQLiteEventStore(self._database_path) as store:
-            return self._select_day(store, now)
+        with self._operations:
+            now = self._now()
+            with SQLiteEventStore(self._database_path) as store:
+                return self._select_day(store, now)
 
     def _append(self, kind: EventType) -> AppStatus:
-        now = self._now()
-        event = WorkEvent(kind, now)
-        with SQLiteEventStore(self._database_path) as store:
-            selected = self._select_day(store, now)
-            day = store.append_event(selected.work_date, event)
-            return AppStatus(selected.work_date, day)
+        with self._operations:
+            now = self._now()
+            event = WorkEvent(kind, now)
+            with SQLiteEventStore(self._database_path) as store:
+                selected = self._select_day(store, now)
+                day = store.append_event(selected.work_date, event)
+                return AppStatus(selected.work_date, day)
+
+    def auto_start_if_needed(self) -> AppStatus:
+        """Start only an unstarted selected day, using one clock reading.
+
+        Serialize with manual use cases on this application instance. Open
+        previous days and today's finished day are returned without a write.
+        """
+        with self._operations:
+            now = self._now()
+            with SQLiteEventStore(self._database_path) as store:
+                selected = self._select_day(store, now)
+                if selected.day.state is not WorkState.NOT_STARTED:
+                    return selected
+                event = WorkEvent(EventType.WORK_START, now)
+                day = store.append_event(selected.work_date, event)
+                return AppStatus(selected.work_date, day)
 
     def start_work(self) -> AppStatus:
         return self._append(EventType.WORK_START)
@@ -79,7 +99,8 @@ class WorkTimeApp:
 
     def close(self) -> None:
         """Release application access without recording any domain event."""
-        self._closed = True
+        with self._operations:
+            self._closed = True
 
 
 def create_default_app(
