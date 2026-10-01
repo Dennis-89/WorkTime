@@ -47,3 +47,5 @@ Diff-Prüfung:
 - Sichere Ausgangszustand, Endzustand, Diff und vollständige Testausgaben.
 - Erfolgsaussagen ohne rohe Testausgaben gelten nicht als Nachweis.
 - Nachweisdateien dürfen nicht committed oder gestaged werden.
+- REPORT.md ist das primäre Prüfartefakt für den Nutzer und muss ohne zusätzliche Terminalausgaben eine vollständige Code- und Nachweisprüfung ermöglichen.
+- Separate ZIP-, Patch-, Log- oder Hash-Dateien dürfen zusätzlich erzeugt werden, dürfen aber für die Prüfung notwendige Inhalte im REPORT.md nicht ersetzen.

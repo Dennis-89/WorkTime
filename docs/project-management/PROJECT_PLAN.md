@@ -133,7 +133,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ### WP-001: Fachliches Zustandsmodell und Zeitberechnung implementieren
 
-- Status: freigegeben
+- Status: abgeschlossen
 - Projektschritt: PS-01
 - Ziel: Vollständig getestete, persistenz- und GUI-unabhängige Fachlogik für einen Arbeitstag.
 - Voraussetzungen: Projektplan und Agentenregeln vorhanden.
@@ -218,7 +218,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ### WP-002: SQLite-Persistenz implementieren
 
-- Status: geplant
+- Status: Prüfung
 - Projektschritt: PS-01
 - Ziel: Fachereignisse dauerhaft lokal speichern und wiederherstellen.
 - Abhängigkeiten: WP-001.
@@ -267,7 +267,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ## Fortschritt
 
-- Aktuelles Arbeitspaket: WP-001
+- Aktuelles Arbeitspaket: WP-002
 - Letzter geprüfter Stand: Basis-Commit cb7c544
 - Blocker: keine
 - Nächster Schritt: WP-001 durch Codex implementieren und Nachweise prüfen.
