@@ -380,10 +380,10 @@ def test_day_and_week_summaries_read_clock_once(context):
     calls = clock.calls
     summary = app.day_summary(BASE.date())
     assert clock.calls == calls + 1
-    assert summary.net == timedelta(hours=2)
+    assert summary.net == timedelta(hours=1, minutes=45)
     weekly = app.week_summary(BASE.date())
     assert clock.calls == calls + 2
-    assert weekly.total_net == timedelta(hours=2)
+    assert weekly.total_net == timedelta(hours=1, minutes=45)
     clock.now += timedelta(days=1)
     assert app.day_summary(BASE.date()).incomplete
     assert app.week_summary(BASE.date()).total_net == timedelta()
@@ -408,6 +408,55 @@ def test_new_app_use_cases_reject_closed_app(context):
     app.close()
     for method, args in ((app.today, ()), (app.day_summary, (BASE.date(),)),
                          (app.week_summary, (BASE.date(),)), (app.raw_events, (BASE.date(),)),
-                         (app.correct_day, (BASE.date(), ()))):
+                         (app.correct_day, (BASE.date(), ())),
+                         (app.flat_break_enabled, (BASE.date(),)),
+                         (app.set_flat_break_enabled, (BASE.date(), False))):
         with pytest.raises(RuntimeError, match="geschlossen"):
             method(*args)
+
+
+def test_daily_options_survive_app_reopen_and_apply_per_day(context):
+    app, clock, path = context
+    for delta in (0, 1):
+        clock.now = BASE + timedelta(days=delta)
+        app.start_work()
+        clock.now += timedelta(hours=8)
+        app.finish_work()
+    first, second = BASE.date(), clock.now.date()
+    assert app.flat_break_enabled(first) is True
+    assert app.day_summary(first).net == timedelta(hours=7, minutes=45)
+    app.set_flat_break_enabled(first, False)
+    assert app.day_summary(first).net == timedelta(hours=8)
+    assert app.day_summary(second).net == timedelta(hours=7, minutes=45)
+    assert app.week_summary(first).total_net == timedelta(hours=15, minutes=45)
+    app.close()
+    with_app = WorkTimeApp(path, clock=clock)
+    try:
+        assert with_app.flat_break_enabled(first) is False
+        assert with_app.flat_break_enabled(second) is True
+        assert with_app.week_summary(first).total_net == timedelta(hours=15, minutes=45)
+        with_app.set_flat_break_enabled(first, True)
+        assert with_app.day_summary(first).flat_break == timedelta(minutes=15)
+    finally:
+        with_app.close()
+
+
+def test_options_and_corrections_do_not_change_each_other(context):
+    from worktime.domain import WorkEvent
+    app, clock, path = context
+    app.start_work()
+    clock.now += timedelta(hours=8)
+    app.finish_work()
+    original = app.raw_events(BASE.date())
+    app.set_flat_break_enabled(BASE.date(), False)
+    app.correct_day(BASE.date(), (WorkEvent(EventType.WORK_START, BASE - timedelta(hours=1)),
+                                  WorkEvent(EventType.WORK_END, clock.now)))
+    assert app.flat_break_enabled(BASE.date()) is False
+    with SQLiteEventStore(path) as store:
+        corrected = store.load_correction_revision(BASE.date(), 1).events
+    app.set_flat_break_enabled(BASE.date(), True)
+    assert app.raw_events(BASE.date()) == original
+    with SQLiteEventStore(path) as store:
+        assert store.list_correction_revisions(BASE.date()) == (1,)
+        assert store.load_correction_revision(BASE.date(), 1).events == corrected
+    assert app.day_summary(BASE.date()).net == timedelta(hours=8, minutes=45)

@@ -256,6 +256,20 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 - Abhängigkeiten: WP-005.
 - Geplanter Commit: build: add Windows deployment
 
+### WP-007: Pauschaler täglicher Pausenabzug
+
+- Status: abgeschlossen
+- Einordnung: freigegebene Erweiterung nach dem abgeschlossenen WorkTime-MVP.
+- Ziel: Standardmäßig 15 Minuten zusätzliche Pauschalpause pro Arbeitstag, pro Kalendertag in der GUI deaktivierbar.
+- Abhängigkeit: abgeschlossener WorkTime-MVP / WP-006.
+- Berechnung: Netto = max(Brutto - tatsächlich erfasste Pausen - Pauschalpause, 0).
+- Tagesoption: Ohne gespeicherten Wert aktiviert, auch für historische Arbeitstage; pro Kalendertag persistent.
+- Nicht gestartete Tage: kein Pauschalabzug; laufende Tage: Abzug mit Untergrenze null. Unvollständige Tage behalten ihre bisherige Semantik.
+- Datenhaltung: additive SQLite-Tabelle workday_settings; keine Veränderung von Rohereignissen oder Korrekturen, keine manuelle Migration.
+- Oberfläche: Checkbox "15 min Pauschalpause abziehen" und separate Zeile "Pauschalpause" in der Tagesübersicht; Wochenberechnung verwendet die Tages-Nettozeiten.
+- Abnahme: gezielte Storage-/Summary-/App-/UI-Tests, vollständige Regression und anschließender realer Benutzer-Praxistest.
+- Nachweis: .project-control/evidence/WP-007/REPORT.md.
+
 ## Entscheidungsprotokoll
 
 - 2026-10-01 D-001: Python als Implementierungssprache gewählt.
@@ -267,8 +281,8 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ## Fortschritt
 
-- Aktuelles Arbeitspaket: keines; alle MVP-Arbeitspakete abgeschlossen
-- Letzter geprüfter Stand: WP-006 final geprüft am 2026-10-02; HEAD 822e38739fd7d1a9a6f126da4a4e3bb770e375dd
+- Aktuelles Arbeitspaket: keines; WP-007 als Erweiterung nach dem MVP abgeschlossen; alle MVP-Arbeitspakete abgeschlossen
+- Letzter geprüfter Stand: WP-007 final geprüft und durch Benutzer-Praxistest freigegeben am 2026-10-02; HEAD ea2874462671cf105ec44bbb06c87387a01c6af5
 - Blocker: keine
 - MVP-Status: abgeschlossen
-- Nächster Schritt: keiner; kein offenes MVP-Arbeitspaket mehr.
+- Nächster Schritt: keiner; WP-007 abgeschlossen, kein offenes MVP-Arbeitspaket mehr.

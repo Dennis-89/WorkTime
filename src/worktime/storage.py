@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS workday_correction_events (
     FOREIGN KEY (work_date, revision)
         REFERENCES workday_corrections (work_date, revision)
 );
+CREATE TABLE IF NOT EXISTS workday_settings (
+    work_date TEXT PRIMARY KEY,
+    flat_break_enabled INTEGER NOT NULL CHECK (flat_break_enabled IN (0, 1))
+);
 """
 
 
@@ -68,6 +72,27 @@ class SQLiteEventStore:
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
+
+    def get_flat_break_enabled(self, work_date: date) -> bool:
+        """Missing daily settings default to enabled, including historical days."""
+        row = self._connection.execute(
+            "SELECT flat_break_enabled FROM workday_settings WHERE work_date = ?",
+            (_date_key(work_date),),
+        ).fetchone()
+        return row is None or row[0] == 1
+
+    def set_flat_break_enabled(self, work_date: date, enabled: bool) -> None:
+        """Atomically change only the daily option, never events or revisions."""
+        key = _date_key(work_date)
+        if type(enabled) is not bool:
+            raise TypeError("enabled must be a bool.")
+        with self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            self._connection.execute(
+                "INSERT INTO workday_settings (work_date, flat_break_enabled) VALUES (?, ?) "
+                "ON CONFLICT(work_date) DO UPDATE SET flat_break_enabled = excluded.flat_break_enabled",
+                (key, int(enabled)),
+            )
 
     def append_event(self, work_date: date, event: WorkEvent) -> WorkDay:
         """Validate with WorkDay.apply, then atomically persist the event.

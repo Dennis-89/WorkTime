@@ -43,6 +43,7 @@ def day_view(summary) -> DayView:
         ("Arbeitsende", stamp_text(summary.end)),
         ("Brutto", duration_text(summary.gross)),
         ("Pause", duration_text(summary.pause)),
+        ("Pauschalpause", duration_text(summary.flat_break)),
         ("Netto", duration_text(summary.net)),
         ("Zustand", LABELS[summary.state]),
         ("Hinweis", "Unvollständig – Korrektur erforderlich" if summary.incomplete else ""),
@@ -128,6 +129,7 @@ class TkWindows:
             try:
                 summary = self.app.day_summary(current[0])
                 view = day_view(summary)
+                enabled = self.app.flat_break_enabled(current[0])
             except Exception as error:
                 self.show_error(str(error))
                 return
@@ -140,6 +142,17 @@ class TkWindows:
                     current[0] = (current[0] + timedelta(days=delta)) if delta else self.app.today()
                     render()
                 self.ttk.Button(navigation, text=text, command=move).pack(side="left")
+            option = self.tk.BooleanVar(master=window, value=enabled)
+
+            def toggle():
+                try:
+                    self.app.set_flat_break_enabled(current[0], option.get())
+                except Exception as error:
+                    self.show_error(str(error))
+                render()
+
+            self.ttk.Checkbutton(content, text="15 min Pauschalpause abziehen",
+                                 variable=option, command=toggle).pack(anchor="w", pady=4)
             for label, value in view.fields:
                 self.ttk.Label(content, text=f"{label}: {value}").pack(anchor="w", pady=2)
             for index, pause in enumerate(view.pauses, 1):

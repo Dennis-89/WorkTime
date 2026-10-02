@@ -25,7 +25,8 @@ def input_at(text):
 def test_desktop_free_viewmodels():
     empty = summarize_day(BASE.date(), WorkDay(), as_of=BASE)
     view = day_view(empty)
-    assert dict(view.fields)["Netto"] == "-"
+    assert dict(view.fields)["Netto"] == "00:00"
+    assert dict(view.fields)["Pauschalpause"] == "00:00"
     assert dict(view.fields)["Zustand"] == "Noch nicht gestartet"
     week = week_view(summarize_week(BASE.date(), lambda _: WorkDay(), as_of=BASE))
     assert len(week.rows) == 7
@@ -226,6 +227,100 @@ def widget_tree(widget):
         yield from widget_tree(child)
 
 
+def fake_windows(app):
+    from types import SimpleNamespace
+    from worktime.ui import TkWindows
+    windows = object.__new__(TkWindows)
+    windows.root, windows.app = Widget(), app
+    windows.tk = SimpleNamespace(Toplevel=Widget, Canvas=Widget, StringVar=Variable, BooleanVar=Variable)
+    windows.ttk = SimpleNamespace(**{name: Widget for name in
+                                    ('Frame', 'Label', 'Button', 'Checkbutton', 'Entry', 'Scrollbar', 'Treeview')})
+    return windows
+
+
+def control(window, text):
+    return next(w for w in widget_tree(window) if w.kwargs.get('text') == text)
+
+
+def test_checkbox_navigation_toggle_refresh_and_week_update(tmp_path):
+    from worktime.domain import EventType, WorkEvent
+    from unittest.mock import call
+    app = WorkTimeApp(tmp_path / 'checkbox.db', clock=lambda: BASE + timedelta(hours=8))
+    today = BASE.date()
+    app.correct_day(today, (WorkEvent(EventType.WORK_START, BASE),
+                            WorkEvent(EventType.WORK_END, BASE + timedelta(hours=8))))
+    app.set_flat_break_enabled(today - timedelta(days=1), False)
+    tracked = Mock(wraps=app)
+    windows = fake_windows(tracked)
+    try:
+        windows.open_day()
+        day = windows.root.children[0]
+        checkbox = control(day, '15 min Pauschalpause abziehen')
+        assert checkbox.kwargs['variable'].get() is True
+        assert control(day, 'Pauschalpause: 00:15')
+        assert control(day, 'Pause: 00:00')
+        assert control(day, 'Netto: 07:45')
+        windows.open_week()
+        week = windows.root.children[-1]
+        assert control(week, 'Gesamt Netto: 07:45')
+        tracked.reset_mock()
+        checkbox.kwargs['variable'].set(False)
+        checkbox.kwargs['command']()
+        assert tracked.mock_calls == [call.set_flat_break_enabled(today, False),
+                                      call.day_summary(today), call.flat_break_enabled(today)]
+        assert not day.destroyed
+        assert control(day, 'Pauschalpause: 00:00')
+        assert control(day, 'Netto: 08:00')
+        control(week, 'Aktualisieren').kwargs['command']()
+        assert control(week, 'Gesamt Netto: 08:00')
+        control(day, 'Vortag').kwargs['command']()
+        assert control(day, '15 min Pauschalpause abziehen').kwargs['variable'].get() is False
+        control(day, 'Heute').kwargs['command']()
+        assert control(day, '15 min Pauschalpause abziehen').kwargs['variable'].get() is False
+        control(day, 'Folgetag').kwargs['command']()
+        assert control(day, '15 min Pauschalpause abziehen').kwargs['variable'].get() is True
+        assert control(day, 'Pauschalpause: 00:00')  # Enabled but not yet started.
+        control(day, 'Heute').kwargs['command']()
+        day.destroy()
+        windows.open_day()
+        reopened = windows.root.children[-1]
+        assert control(reopened, '15 min Pauschalpause abziehen').kwargs['variable'].get() is False
+        assert {'Vortag', 'Heute', 'Folgetag', 'Bearbeiten', 'Aktualisieren'} <= {
+            w.kwargs.get('text') for w in widget_tree(reopened)}
+    finally:
+        app.close()
+
+
+def test_failed_checkbox_save_reports_error_and_reloads_saved_value(tmp_path):
+    app = WorkTimeApp(tmp_path / 'checkbox-error.db', clock=lambda: BASE)
+    tracked = Mock(wraps=app)
+    tracked.set_flat_break_enabled.side_effect = RuntimeError('save failed')
+    windows = fake_windows(tracked)
+    windows.show_error = Mock()
+    try:
+        windows.open_day()
+        window = windows.root.children[0]
+        checkbox = control(window, '15 min Pauschalpause abziehen')
+        checkbox.kwargs['variable'].set(False)
+        checkbox.kwargs['command']()
+        windows.show_error.assert_called_once_with('save failed')
+        assert control(window, '15 min Pauschalpause abziehen').kwargs['variable'].get() is True
+        assert app.flat_break_enabled(BASE.date()) is True
+    finally:
+        app.close()
+
+
+def test_ui_imports_do_not_bypass_application_layer():
+    import ast
+    import inspect
+    import worktime.ui as module
+    tree = ast.parse(inspect.getsource(module))
+    imported = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+    imported.update(alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names)
+    assert 'sqlite3' not in imported
+    assert 'worktime.storage' not in imported
+
+
 def test_window_builders_navigation_editor_and_close_without_desktop(tmp_path, monkeypatch):
     from types import SimpleNamespace
     import worktime.ui as module
@@ -237,9 +332,9 @@ def test_window_builders_navigation_editor_and_close_without_desktop(tmp_path, m
     root = Widget()
     windows = object.__new__(TkWindows)
     windows.root, windows.app = root, app
-    windows.tk = SimpleNamespace(Toplevel=Widget, Canvas=Widget, StringVar=Variable)
+    windows.tk = SimpleNamespace(Toplevel=Widget, Canvas=Widget, StringVar=Variable, BooleanVar=Variable)
     windows.ttk = SimpleNamespace(**{name: Widget for name in
-                                    ("Frame", "Label", "Button", "Entry", "Scrollbar", "Treeview")})
+                                    ("Frame", "Label", "Button", "Checkbutton", "Entry", "Scrollbar", "Treeview")})
     original_controller = module.EditorController
     monkeypatch.setattr(module, "EditorController",
                         lambda *args, **kwargs: original_controller(*args, **kwargs, resolver=utc))

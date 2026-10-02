@@ -227,6 +227,18 @@ Die Tagesübersicht zeigt unter anderem:
 
 Unvollständige oder falsche Daten können über die Korrekturfunktion angepasst werden.
 
+### Pauschalpause pro Kalendertag
+
+Standardmäßig werden an jedem tatsächlich begonnenen Arbeitstag zusätzlich **15 Minuten Pauschalpause** abgezogen, auch an bereits vorhandenen historischen Arbeitstagen. Dieser Abzug gilt **zusätzlich zu tatsächlich erfassten Pausen**.
+
+In der Tagesübersicht ist die Checkbox **"15 min Pauschalpause abziehen"** standardmäßig aktiviert. Sie kann für einzelne Kalendertage deaktiviert werden; die Einstellung wird pro Tag gespeichert und bleibt nach App- und Windows-Neustart erhalten. Tagesnavigation lädt jeweils die Einstellung des angezeigten Tages.
+
+Die Zeile **Pause** zeigt weiterhin ausschließlich reale Pausen. **Pauschalpause** zeigt separat `00:15` bzw. `00:00`. Die Nettozeit aktualisiert sich sofort beim Umschalten; die Wochenansicht berücksichtigt die Änderung nach **Aktualisieren**.
+
+Es gilt: `Netto = max(Brutto - reale Pausen - Pauschalpause, 0)`. Beispielsweise ergeben `09:00` Brutto, `00:30` reale Pause und `00:15` Pauschalpause eine Nettozeit von `08:15`. Netto kann niemals negativ werden, auch bei laufenden Tagen unter 15 Minuten. Nicht gestartete Tage erhalten keinen Zeitabzug. Historische unvollständige Tage bleiben als unvollständig gekennzeichnet.
+
+Die Option verändert keine Rohereignisse oder Korrekturrevisionen und erzeugt keine künstlichen Pausenereignisse. Vorhandene Datenbanken werden beim normalen Öffnen automatisch um die Settings-Tabelle ergänzt; eine manuelle Migration ist nicht erforderlich.
+
 ## Wochenübersicht
 
 Die Wochenübersicht zeigt:

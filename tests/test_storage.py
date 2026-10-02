@@ -37,6 +37,97 @@ def rows(db_path):
         ).fetchall()
 
 
+@pytest.mark.parametrize("enabled", [True, False, True])
+def test_flat_break_default_and_persistent_daily_option(db_path, enabled):
+    with SQLiteEventStore(db_path) as store:
+        assert store.get_flat_break_enabled(WORK_DATE) is True
+        store.set_flat_break_enabled(WORK_DATE, enabled)
+        assert store.get_flat_break_enabled(WORK_DATE) is enabled
+        assert store.get_flat_break_enabled(WORK_DATE + timedelta(days=1)) is True
+        assert store.list_work_dates() == ()
+    with SQLiteEventStore(db_path) as reopened:
+        assert reopened.get_flat_break_enabled(WORK_DATE) is enabled
+
+
+def audit_snapshot(db_path):
+    """Compare exact stored rows and schemas, excluding only the new setting."""
+    tables = ('work_events', 'workday_corrections', 'workday_correction_events')
+    with closing(sqlite3.connect(db_path)) as conn:
+        return tuple((conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (name,)).fetchone(),
+                      conn.execute(f"SELECT * FROM {name} ORDER BY work_date, 2, 3").fetchall())
+                     for name in tables)
+
+
+def test_flat_break_update_preserves_exact_event_and_correction_data(store, db_path):
+    store.append_event(WORK_DATE, event(EventType.WORK_START))
+    store.append_event(WORK_DATE, event(EventType.WORK_END, 480))
+    store.save_correction(WORK_DATE, (event(EventType.WORK_START, 1), event(EventType.WORK_END, 479)))
+    before = audit_snapshot(db_path)
+    store.set_flat_break_enabled(WORK_DATE, False)
+    store.set_flat_break_enabled(WORK_DATE + timedelta(days=1), True)
+    store.set_flat_break_enabled(WORK_DATE + timedelta(days=1), False)
+    assert store.get_flat_break_enabled(WORK_DATE) is False
+    store.set_flat_break_enabled(WORK_DATE, True)
+    assert store.get_flat_break_enabled(WORK_DATE + timedelta(days=1)) is False
+    assert audit_snapshot(db_path) == before
+    store.save_correction(WORK_DATE, (event(EventType.WORK_START), event(EventType.WORK_END, 481)))
+    assert store.get_flat_break_enabled(WORK_DATE) is True
+    assert store.get_flat_break_enabled(WORK_DATE + timedelta(days=1)) is False
+
+
+def test_existing_database_adds_settings_without_destructive_migration(db_path):
+    # Only a temporary test database is made to resemble the preceding schema.
+    with SQLiteEventStore(db_path) as store:
+        store.append_event(WORK_DATE, event(EventType.WORK_START))
+        store.append_event(WORK_DATE, event(EventType.WORK_END, 480))
+        store.save_correction(WORK_DATE, (event(EventType.WORK_START, 5), event(EventType.WORK_END, 475)))
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("DROP TABLE workday_settings")
+        conn.commit()
+    before = audit_snapshot(db_path)
+    with SQLiteEventStore(db_path) as store:
+        assert store.get_flat_break_enabled(WORK_DATE) is True
+        assert store.list_correction_revisions(WORK_DATE) == (1,)
+        assert store.load_day(WORK_DATE).events[0] == event(EventType.WORK_START, 5)
+        store.set_flat_break_enabled(WORK_DATE, False)
+    assert audit_snapshot(db_path) == before
+    with SQLiteEventStore(db_path) as store:
+        assert store.get_flat_break_enabled(WORK_DATE) is False
+    assert audit_snapshot(db_path) == before
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, 'false', [], 1.0])
+def test_daily_setting_requires_actual_bool(store, value):
+    with pytest.raises(TypeError, match="bool"):
+        store.set_flat_break_enabled(WORK_DATE, value)
+    assert store.get_flat_break_enabled(WORK_DATE) is True
+
+
+@pytest.mark.parametrize("value", [-1, 2, None])
+def test_daily_setting_schema_rejects_invalid_values(store, value):
+    with pytest.raises(sqlite3.IntegrityError):
+        store._connection.execute("INSERT INTO workday_settings VALUES (?, ?)",
+                                  (WORK_DATE.isoformat(), value))
+
+
+def test_failed_setting_update_is_atomic_and_preserves_previous_value(store):
+    store.set_flat_break_enabled(WORK_DATE, False)
+    store._connection.execute("""CREATE TRIGGER reject_setting AFTER UPDATE ON workday_settings
+        BEGIN SELECT RAISE(ABORT, 'test write failure'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match="test write failure"):
+        store.set_flat_break_enabled(WORK_DATE, True)
+    assert store.get_flat_break_enabled(WORK_DATE) is False
+    assert not store._connection.in_transaction
+
+
+@pytest.mark.parametrize("value", [None, BASE, '2026-10-01'])
+def test_daily_setting_requires_explicit_date(store, value):
+    with pytest.raises(TypeError, match="explicit date"):
+        store.get_flat_break_enabled(value)
+    with pytest.raises(TypeError, match="explicit date"):
+        store.set_flat_break_enabled(value, False)
+
+
 def test_new_database_initializes_schema_and_empty_day(db_path):
     assert not db_path.exists()
     with SQLiteEventStore(db_path) as store:

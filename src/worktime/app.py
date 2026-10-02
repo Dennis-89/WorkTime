@@ -112,13 +112,29 @@ class WorkTimeApp:
         with self._operations:
             now = self._now()
             with SQLiteEventStore(self._database_path) as store:
-                return summarize_day(work_date, store.load_day(work_date), as_of=now)
+                return summarize_day(work_date, store.load_day(work_date), as_of=now,
+                                     flat_break_enabled=store.get_flat_break_enabled(work_date))
 
     def week_summary(self, anchor_date: date) -> WeekSummary:
         with self._operations:
             now = self._now()
             with SQLiteEventStore(self._database_path) as store:
-                return summarize_week(anchor_date, store.load_day, as_of=now)
+                return summarize_week(anchor_date, store.load_day, as_of=now,
+                                      load_flat_break_enabled=store.get_flat_break_enabled)
+
+    def flat_break_enabled(self, work_date: date) -> bool:
+        with self._operations:
+            if self._closed:
+                raise RuntimeError("WorkTime ist bereits geschlossen.")
+            with SQLiteEventStore(self._database_path) as store:
+                return store.get_flat_break_enabled(work_date)
+
+    def set_flat_break_enabled(self, work_date: date, enabled: bool) -> None:
+        with self._operations:
+            if self._closed:
+                raise RuntimeError("WorkTime ist bereits geschlossen.")
+            with SQLiteEventStore(self._database_path) as store:
+                store.set_flat_break_enabled(work_date, enabled)
 
     def correct_day(self, work_date: date, events: Iterable[WorkEvent]) -> AppStatus:
         with self._operations:
