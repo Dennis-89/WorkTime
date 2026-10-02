@@ -8,6 +8,7 @@ from threading import RLock
 
 from worktime.domain import DomainError, EventType, WorkDay, WorkEvent, WorkState
 from worktime.storage import SQLiteEventStore
+from worktime.paths import database_path
 from worktime.summary import DaySummary, WeekSummary, summarize_day, summarize_week
 
 
@@ -135,9 +136,7 @@ class WorkTimeApp:
 
 
 def create_default_app(
-    base_directory: str | Path = Path("."), *, clock: Callable[[], datetime] = local_now
+    base_directory: str | Path | None = None, *, clock: Callable[[], datetime] = local_now
 ) -> WorkTimeApp:
-    """Use data/worktime.db below the working directory (or supplied base)."""
-    database_path = Path(base_directory) / "data" / "worktime.db"
-    database_path.parent.mkdir(parents=True, exist_ok=True)
-    return WorkTimeApp(database_path, clock=clock)
+    """Use LOCALAPPDATA/WorkTime; an explicit base is available for tests."""
+    return WorkTimeApp(database_path(base_directory=base_directory), clock=clock)

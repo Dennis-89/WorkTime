@@ -9,6 +9,7 @@ from worktime.app import WorkTimeApp, create_default_app
 from worktime.domain import WorkState
 from worktime.windows_session import WindowsSessionListener
 from worktime.ui import UIService
+from worktime.single_instance import SingleInstance
 
 
 logger = logging.getLogger(__name__)
@@ -186,4 +187,8 @@ def run_tray(app: WorkTimeApp) -> None:
 
 
 def main() -> None:
-    run_tray(create_default_app())
+    # Acquire before creating even the data directory or the first connection.
+    with SingleInstance() as acquired:
+        if not acquired:
+            return
+        run_tray(create_default_app())

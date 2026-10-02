@@ -242,7 +242,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ### WP-005: Tages-, Wochen- und Korrekturansicht implementieren
 
-- Status: Prüfung
+- Status: abgeschlossen
 - Projektschritt: PS-04
 - Ziel: Zeiten prüfen, zusammenfassen und manuell korrigieren.
 - Abhängigkeiten: WP-004.
@@ -250,7 +250,7 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ### WP-006: Windows-Bereitstellung und Praxistest
 
-- Status: geplant
+- Status: abgeschlossen
 - Projektschritt: PS-05
 - Ziel: Anwendung ohne IDE starten und im realen Arbeitsalltag testen.
 - Abhängigkeiten: WP-005.
@@ -267,7 +267,8 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ## Fortschritt
 
-- Aktuelles Arbeitspaket: WP-005
-- Letzter geprüfter Stand: Basis-Commit cb7c544
+- Aktuelles Arbeitspaket: keines; alle MVP-Arbeitspakete abgeschlossen
+- Letzter geprüfter Stand: WP-006 final geprüft am 2026-10-02; HEAD 822e38739fd7d1a9a6f126da4a4e3bb770e375dd
 - Blocker: keine
-- Nächster Schritt: WP-001 durch Codex implementieren und Nachweise prüfen.
+- MVP-Status: abgeschlossen
+- Nächster Schritt: keiner; kein offenes MVP-Arbeitspaket mehr.

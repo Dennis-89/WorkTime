@@ -208,14 +208,17 @@ def test_naive_clock_is_rejected_before_storage(context, zone):
     assert path.read_bytes() == before
 
 
-def test_default_factory_creates_data_directory_under_working_directory(tmp_path, monkeypatch):
+def test_default_factory_creates_data_directory_under_localappdata(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     assert not (tmp_path / "data").exists()
     app = create_default_app(clock=Clock())
     try:
         app.start_work()
-        assert (tmp_path / "data" / "worktime.db").is_file()
-        assert saved(tmp_path / "data" / "worktime.db").state is WorkState.WORKING
+        path = tmp_path / "local" / "WorkTime" / "data" / "worktime.db"
+        assert path.is_file()
+        assert not (tmp_path / "data").exists()
+        assert saved(path).state is WorkState.WORKING
     finally:
         app.close()
 

@@ -267,11 +267,16 @@ def test_main_uses_default_factory_and_tray_runner(monkeypatch):
     app = fake_app()
     factory = Mock(return_value=app)
     runner = Mock()
+    guard = Mock()
+    guard.__enter__ = Mock(return_value=True)
+    guard.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(tray_module, "SingleInstance", Mock(return_value=guard))
     monkeypatch.setattr(tray_module, "create_default_app", factory)
     monkeypatch.setattr(tray_module, "run_tray", runner)
     tray_module.main()
     factory.assert_called_once_with()
     runner.assert_called_once_with(app)
+    guard.__exit__.assert_called_once()
 
 
 def test_startup_auto_start_precedes_initial_menu_and_listener(tmp_path, monkeypatch, session_listeners):
@@ -539,3 +544,64 @@ def test_ui_stop_failure_still_closes_other_resources(ui_services, session_liste
     session_listeners[0].stop.assert_called_once_with()
     icon.stop.assert_called_once_with()
     app.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize("failure", [None, "factory", "runner"])
+def test_single_instance_wraps_startup_and_shutdown(monkeypatch, failure):
+    from contextlib import contextmanager
+    order = []
+    @contextmanager
+    def guard():
+        order.append("mutex acquired")
+        try:
+            yield True
+        finally:
+            order.append("mutex released")
+    def factory():
+        order.append("app")
+        if failure == "factory":
+            raise OSError("factory")
+        return fake_app()
+    def runner(app):
+        order.append("tray")
+        if failure == "runner":
+            raise OSError("runner")
+    monkeypatch.setattr(tray_module, "SingleInstance", guard)
+    monkeypatch.setattr(tray_module, "create_default_app", factory)
+    monkeypatch.setattr(tray_module, "run_tray", runner)
+    if failure:
+        with pytest.raises(OSError, match=failure):
+            tray_module.main()
+    else:
+        tray_module.main()
+    assert order == ["mutex acquired", "app"] + ([] if failure == "factory" else ["tray"]) + ["mutex released"]
+
+
+def test_second_instance_does_not_initialize_app_or_modify_database(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    path = tmp_path / "existing.db"
+    now = datetime(2026, 10, 1, 8, tzinfo=timezone.utc)
+    app = WorkTimeApp(path, clock=lambda: now)
+    app.start_work()
+    app.close()
+    before = path.read_bytes()
+    @contextmanager
+    def busy():
+        yield False
+    factory, runner = Mock(), Mock()
+    monkeypatch.setattr(tray_module, "SingleInstance", busy)
+    monkeypatch.setattr(tray_module, "create_default_app", factory)
+    monkeypatch.setattr(tray_module, "run_tray", runner)
+    tray_module.main()
+    factory.assert_not_called()
+    runner.assert_not_called()
+    assert path.read_bytes() == before
+
+
+def test_mutex_error_never_initializes_app(monkeypatch):
+    factory = Mock()
+    monkeypatch.setattr(tray_module, "SingleInstance", Mock(side_effect=OSError("mutex")))
+    monkeypatch.setattr(tray_module, "create_default_app", factory)
+    with pytest.raises(OSError, match="mutex"):
+        tray_module.main()
+    factory.assert_not_called()
