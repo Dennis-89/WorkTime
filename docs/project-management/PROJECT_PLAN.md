@@ -270,6 +270,19 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 - Abnahme: gezielte Storage-/Summary-/App-/UI-Tests, vollständige Regression und anschließender realer Benutzer-Praxistest.
 - Nachweis: .project-control/evidence/WP-007/REPORT.md.
 
+### WP-008: Monatsübersicht und CSV-Export
+
+- Status: abgeschlossen
+- Einordnung: Erweiterung nach abgeschlossenem MVP und abgeschlossenem WP-007.
+- Abhängigkeit: WP-007 abgeschlossen.
+- Ziel: Historische Monatsübersicht sowie CSV-Export eines frei wählbaren inklusiven Datumsbereichs.
+- Monatsübersicht: alle Kalendertage, Vormonat / Dieser Monat / Folgemonat, bestehende Tageswerte und Gesamt-Netto; unvollständige historische Tage nicht summieren.
+- Berechnung: bestehende Tages-/WP-007-Semantik unverändert wiederverwenden; ein konsistenter Auswertungszeitpunkt pro Monats- oder Exportlauf.
+- CSV: Start-/Enddatum JJJJ-MM-TT, Defaultbereich angezeigter Monat; Windows-Speichern-Dialog; UTF-8 mit BOM, Semikolon, acht Spalten, jeder Kalendertag ohne Gesamtzeile.
+- Datensicherheit: rein lesender Bereichszugriff, keine Veränderung von Rohereignissen, Korrekturen oder Tagesoptionen; keine produktive Datenbank in Tests.
+- Abnahme: gezielte Summary-/App-/Tray-/UI-/CSV-Tests, komplette Regression und anschließender Benutzer-Praxistest.
+- Nachweis: .project-control/evidence/WP-008/REPORT.md.
+
 ## Entscheidungsprotokoll
 
 - 2026-10-01 D-001: Python als Implementierungssprache gewählt.
@@ -281,8 +294,8 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ## Fortschritt
 
-- Aktuelles Arbeitspaket: keines; WP-007 als Erweiterung nach dem MVP abgeschlossen; alle MVP-Arbeitspakete abgeschlossen
-- Letzter geprüfter Stand: WP-007 final geprüft und durch Benutzer-Praxistest freigegeben am 2026-10-02; HEAD ea2874462671cf105ec44bbb06c87387a01c6af5
+- Aktuelles Arbeitspaket: keines; WP-008 als Erweiterung nach MVP und WP-007 abgeschlossen
+- Letzter geprüfter Stand: WP-008 final technisch geprüft und Benutzer-Praxistest erfolgreich am 2026-10-02; HEAD vor WP-008-Commit: 2b441492fd85885eaf128aa8574386f0fe02acd4; WP-008 noch nicht committed
 - Blocker: keine
 - MVP-Status: abgeschlossen
-- Nächster Schritt: keiner; WP-007 abgeschlossen, kein offenes MVP-Arbeitspaket mehr.
+- Nächster Schritt: keiner; WP-008 abgeschlossen, keine offenen technischen oder praktischen Blocker; MVP und WP-007 bleiben abgeschlossen.

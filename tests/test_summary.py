@@ -5,6 +5,7 @@ import pytest
 from worktime.domain import DomainError, EventType, WorkDay, WorkEvent, WorkState
 from worktime.storage import SQLiteEventStore
 from worktime.summary import summarize_day, summarize_week
+from worktime.summary import summarize_month, summarize_date_range
 
 DAY = date(2026, 10, 1)
 BASE = datetime(2026, 10, 1, 8, tzinfo=timezone.utc)
@@ -163,3 +164,65 @@ def test_as_of_must_be_aware_and_not_before_running_events():
     for stamp in (BASE.replace(tzinfo=None), BASE - timedelta(minutes=1)):
         with pytest.raises(DomainError):
             summarize_day(DAY, day, as_of=stamp)
+
+
+@pytest.mark.parametrize("anchor,count", [(date(2026, 1, 15), 31), (date(2026, 4, 15), 30),
+                                         (date(2026, 2, 15), 28), (date(2028, 2, 15), 29),
+                                         (date(9999, 12, 1), 31)])
+def test_month_calendar_bounds_and_all_unstarted_days(anchor, count):
+    month = summarize_month(anchor, lambda _: WorkDay(), as_of=BASE)
+    assert month.first_day == anchor.replace(day=1)
+    assert month.last_day == anchor.replace(day=count)
+    assert len(month.days) == count
+    assert [day.work_date for day in month.days] == [month.first_day + timedelta(days=i) for i in range(count)]
+    assert all(day.net == day.flat_break == day.pause == timedelta() for day in month.days)
+    assert month.total_net == timedelta() and month.incomplete_dates == ()
+
+
+def test_month_reuses_daily_semantics_options_corrections_and_incomplete_days(tmp_path):
+    with SQLiteEventStore(tmp_path / 'month.db') as store:
+        for delta in range(4):
+            work_date = DAY + timedelta(days=delta)
+            stamp = BASE + timedelta(days=delta)
+            store.append_event(work_date, WorkEvent(EventType.WORK_START, stamp))
+            if delta != 3:
+                store.append_event(work_date, WorkEvent(EventType.PAUSE_START, stamp + timedelta(hours=1)))
+                store.append_event(work_date, WorkEvent(EventType.PAUSE_END, stamp + timedelta(hours=1, minutes=30)))
+                store.append_event(work_date, WorkEvent(EventType.WORK_END, stamp + timedelta(hours=8)))
+        store.set_flat_break_enabled(DAY + timedelta(days=1), False)
+        stamp = BASE + timedelta(days=2)
+        store.save_correction(DAY + timedelta(days=2), (WorkEvent(EventType.WORK_START, stamp),
+                                                       WorkEvent(EventType.WORK_END, stamp + timedelta(hours=9))))
+        as_of = BASE + timedelta(days=10)
+        month = summarize_month(DAY, store.load_day, as_of=as_of,
+                                load_flat_break_enabled=store.get_flat_break_enabled)
+        assert month.days == tuple(summarize_day(day.work_date, store.load_day(day.work_date), as_of=as_of,
+                                  flat_break_enabled=store.get_flat_break_enabled(day.work_date)) for day in month.days)
+    assert month.days[0].net == timedelta(hours=7, minutes=15)
+    assert month.days[0].pause == timedelta(minutes=30)
+    assert month.days[1].net == timedelta(hours=7, minutes=30)
+    assert month.days[1].flat_break == timedelta()
+    assert month.days[2].net == timedelta(hours=8, minutes=45)
+    assert month.days[3].net is None and month.days[3].incomplete
+    assert month.total_net == timedelta(hours=23, minutes=30)
+    assert month.incomplete_dates == (DAY + timedelta(days=3),)
+
+
+def test_month_uses_one_supplied_as_of_and_current_running_day(monkeypatch):
+    import worktime.summary as module
+    from unittest.mock import Mock
+    original = module.summarize_day
+    tracked = Mock(wraps=original)
+    monkeypatch.setattr(module, 'summarize_day', tracked)
+    day = day_with((EventType.WORK_START, 0))
+    as_of = BASE + timedelta(hours=2)
+    month = summarize_month(DAY, lambda work_date: day if work_date == DAY else WorkDay(), as_of=as_of)
+    assert month.days[0].net == timedelta(hours=1, minutes=45)
+    assert not month.days[0].incomplete
+    assert len(tracked.call_args_list) == 31
+    assert all(call.kwargs['as_of'] is as_of for call in tracked.call_args_list)
+
+
+def test_range_includes_date_max_without_overflow():
+    summaries = summarize_date_range(date.max, date.max, lambda _: WorkDay(), as_of=BASE)
+    assert len(summaries) == 1 and summaries[0].work_date == date.max

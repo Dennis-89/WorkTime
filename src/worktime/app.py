@@ -10,6 +10,7 @@ from worktime.domain import DomainError, EventType, WorkDay, WorkEvent, WorkStat
 from worktime.storage import SQLiteEventStore
 from worktime.paths import database_path
 from worktime.summary import DaySummary, WeekSummary, summarize_day, summarize_week
+from worktime.summary import MonthSummary, summarize_month, summarize_date_range, validate_date_range
 
 
 def local_now() -> datetime:
@@ -128,6 +129,21 @@ class WorkTimeApp:
                 raise RuntimeError("WorkTime ist bereits geschlossen.")
             with SQLiteEventStore(self._database_path) as store:
                 return store.get_flat_break_enabled(work_date)
+
+    def month_summary(self, anchor_date: date) -> MonthSummary:
+        with self._operations:
+            now = self._now()
+            with SQLiteEventStore(self._database_path) as store:
+                return summarize_month(anchor_date, store.load_day, as_of=now,
+                                       load_flat_break_enabled=store.get_flat_break_enabled)
+
+    def date_range_summaries(self, start_date: date, end_date: date) -> tuple[DaySummary, ...]:
+        validate_date_range(start_date, end_date)
+        with self._operations:
+            now = self._now()
+            with SQLiteEventStore(self._database_path) as store:
+                return summarize_date_range(start_date, end_date, store.load_day, as_of=now,
+                                            load_flat_break_enabled=store.get_flat_break_enabled)
 
     def set_flat_break_enabled(self, work_date: date, enabled: bool) -> None:
         with self._operations:

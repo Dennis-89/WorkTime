@@ -9,21 +9,18 @@ from worktime.correction import (
     DayEdit, PauseEdit, edit_from_summary, events_from_edit, parse_time, windows_local_time,
 )
 from worktime.domain import DomainError, WorkState
+from worktime.export import (
+    CSV_HEADER, STATE_LABELS as LABELS, INCOMPLETE_HINT, day_row,
+    duration_text as format_duration, parse_date_range, suggested_filename, write_csv,
+)
 
 
-LABELS = {
-    WorkState.NOT_STARTED: "Noch nicht gestartet",
-    WorkState.WORKING: "Arbeit läuft",
-    WorkState.PAUSED: "Pause",
-    WorkState.FINISHED: "Feierabend",
-}
+MONTH_NAMES = ('Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli',
+               'August', 'September', 'Oktober', 'November', 'Dezember')
 
 
 def duration_text(value: timedelta | None) -> str:
-    if value is None:
-        return "-"
-    minutes = int(value.total_seconds() // 60)
-    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+    return format_duration(value, missing='-')
 
 
 def stamp_text(value: datetime | None) -> str:
@@ -46,7 +43,7 @@ def day_view(summary) -> DayView:
         ("Pauschalpause", duration_text(summary.flat_break)),
         ("Netto", duration_text(summary.net)),
         ("Zustand", LABELS[summary.state]),
-        ("Hinweis", "Unvollständig – Korrektur erforderlich" if summary.incomplete else ""),
+        ("Hinweis", INCOMPLETE_HINT if summary.incomplete else ""),
     ), tuple(f"{stamp_text(p.start)} – {stamp_text(p.end)}" for p in summary.pauses))
 
 
@@ -55,6 +52,24 @@ class WeekView:
     title: str
     rows: tuple[tuple[str, str, str], ...]
     total: str
+
+
+@dataclass(frozen=True)
+class MonthView:
+    title: str
+    rows: tuple[tuple[str, ...], ...]
+    total: str
+
+
+def month_view(summary) -> MonthView:
+    return MonthView(f"{MONTH_NAMES[summary.first_day.month - 1]} {summary.first_day.year}",
+                     tuple(day_row(day, missing='-') for day in summary.days),
+                     duration_text(summary.total_net))
+
+
+def shift_month(anchor: date, delta: int) -> date:
+    year, month = divmod(anchor.year * 12 + anchor.month - 1 + delta, 12)
+    return date(year, month + 1, 1)
 
 
 def week_view(summary) -> WeekView:
@@ -106,8 +121,9 @@ class TkWindows:
     """Created, called and destroyed exclusively by UIService's Tk thread."""
     def __init__(self, root, app):
         import tkinter as tk
-        from tkinter import ttk
+        from tkinter import ttk, filedialog
         self.root, self.app, self.tk, self.ttk = root, app, tk, ttk
+        self.filedialog = filedialog
 
     def show_error(self, message):
         window = self.tk.Toplevel(self.root)
@@ -194,6 +210,86 @@ class TkWindows:
             self.ttk.Label(content, text=f"Gesamt Netto: {view.total}").pack(pady=8)
             self.ttk.Button(content, text="Aktualisieren", command=render).pack()
         render()
+
+    def open_month(self):
+        window = self.tk.Toplevel(self.root)
+        window.geometry("1150x650")
+        content = self.ttk.Frame(window, padding=12)
+        content.pack(fill="both", expand=True)
+        anchor = [self.app.today()]
+
+        def render():
+            try:
+                summary = self.app.month_summary(anchor[0])
+                view = month_view(summary)
+            except Exception as error:
+                self.show_error(str(error))
+                return
+            window.title(view.title)
+            for child in content.winfo_children():
+                child.destroy()
+            navigation = self.ttk.Frame(content)
+            navigation.pack()
+            for text, step in (("Vormonat", -1), ("Dieser Monat", 0), ("Folgemonat", 1)):
+                def move(delta=step):
+                    try:
+                        anchor[0] = shift_month(anchor[0], delta) if delta else self.app.today()
+                    except Exception as error:
+                        self.show_error(str(error))
+                        return
+                    render()
+                self.ttk.Button(navigation, text=text, command=move).pack(side="left")
+            area = self.ttk.Frame(content)
+            area.pack(fill="both", expand=True, pady=8)
+            table = self.ttk.Treeview(area, columns=CSV_HEADER, show="headings", height=16)
+            vertical = self.ttk.Scrollbar(area, orient="vertical", command=table.yview)
+            vertical.pack(side="right", fill="y")
+            horizontal = self.ttk.Scrollbar(content, orient="horizontal", command=table.xview)
+            horizontal.pack(fill="x")
+            table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+            for key in CSV_HEADER:
+                table.heading(key, text=key)
+            for row in view.rows:
+                table.insert("", "end", values=row)
+            table.pack(side="left", fill="both", expand=True)
+            self.ttk.Label(content, text=f"Gesamt Netto: {view.total}").pack(pady=8)
+            self.ttk.Button(content, text="Aktualisieren", command=render).pack()
+            self.ttk.Button(content, text="CSV exportieren",
+                            command=lambda: self._export_dialog(summary, window)).pack(pady=8)
+        render()
+
+    def _export_dialog(self, summary, parent):
+        window = self.tk.Toplevel(parent)
+        window.title("WorkTime – CSV exportieren")
+        frame = self.ttk.Frame(window, padding=12)
+        frame.pack(fill="both", expand=True)
+        self.ttk.Label(frame, text="Datumsformat: JJJJ-MM-TT (Zeitraum einschließlich Start und Ende)").pack()
+        variables = []
+        for label, value in (("Startdatum", summary.first_day), ("Enddatum", summary.last_day)):
+            row = self.ttk.Frame(frame)
+            row.pack(fill="x", pady=4)
+            self.ttk.Label(row, text=label, width=12).pack(side="left")
+            variable = self.tk.StringVar(master=window, value=value.isoformat())
+            self.ttk.Entry(row, textvariable=variable, width=12).pack(side="left")
+            variables.append(variable)
+
+        def save():
+            try:
+                start, end = parse_date_range(*(value.get() for value in variables))
+                path = self.filedialog.asksaveasfilename(
+                    parent=window, title="WorkTime – CSV speichern", defaultextension=".csv",
+                    filetypes=(("CSV-Dateien", "*.csv"), ("Alle Dateien", "*.*")),
+                    initialfile=suggested_filename(start, end))
+                if not path:
+                    return
+                days = self.app.date_range_summaries(start, end)
+                write_csv(path, days)
+                window.destroy()
+            except Exception as error:
+                self.show_error(str(error))
+
+        self.ttk.Button(frame, text="Exportieren", command=save).pack(side="left", pady=8)
+        self.ttk.Button(frame, text="Abbrechen", command=window.destroy).pack(side="left", pady=8)
 
     def _editor(self, summary, refreshed, parent):
         window = self.tk.Toplevel(parent)
@@ -308,6 +404,9 @@ class UIService:
     def open_week(self):
         self._open("week")
 
+    def open_month(self):
+        self._open("month")
+
     def stop(self):
         with self._lock:
             self._closed = True
@@ -341,6 +440,8 @@ class UIService:
                             windows.open_day()
                         elif command == "week":
                             windows.open_week()
+                        elif command == "month":
+                            windows.open_month()
                     except Exception as error:
                         windows.show_error(str(error))
                 root.after(30, poll)

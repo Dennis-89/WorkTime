@@ -1,5 +1,6 @@
 """GUI-independent summaries of effective workdays."""
 from collections.abc import Callable
+from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -33,6 +34,53 @@ class WeekSummary:
     days: tuple[DaySummary, ...]
     total_net: timedelta
     incomplete_dates: tuple[date, ...]
+
+
+@dataclass(frozen=True)
+class MonthSummary:
+    first_day: date
+    last_day: date
+    days: tuple[DaySummary, ...]
+    total_net: timedelta
+    incomplete_dates: tuple[date, ...]
+
+
+def validate_date_range(start_date: date, end_date: date) -> None:
+    for value in (start_date, end_date):
+        if not isinstance(value, date) or isinstance(value, datetime):
+            raise TypeError("Der Zeitraum benötigt Kalenderdaten, keine Zeitstempel.")
+    if start_date > end_date:
+        raise DomainError("Startdatum darf nicht nach dem Enddatum liegen.")
+
+
+def month_bounds(anchor_date: date) -> tuple[date, date]:
+    validate_date_range(anchor_date, anchor_date)
+    return (anchor_date.replace(day=1),
+            anchor_date.replace(day=monthrange(anchor_date.year, anchor_date.month)[1]))
+
+
+def summarize_date_range(start_date: date, end_date: date, load_day: Callable[[date], WorkDay],
+                         *, as_of: datetime,
+                         load_flat_break_enabled: Callable[[date], bool] | None = None) -> tuple[DaySummary, ...]:
+    """Inclusive calendar range; one supplied evaluation instant for every day."""
+    validate_date_range(start_date, end_date)
+    days = []
+    for index in range((end_date - start_date).days + 1):
+        work_date = start_date + timedelta(days=index)
+        days.append(summarize_day(work_date, load_day(work_date), as_of=as_of,
+                                 flat_break_enabled=(load_flat_break_enabled(work_date)
+                                                     if load_flat_break_enabled else True)))
+    return tuple(days)
+
+
+def summarize_month(anchor_date: date, load_day: Callable[[date], WorkDay], *, as_of: datetime,
+                    load_flat_break_enabled: Callable[[date], bool] | None = None) -> MonthSummary:
+    first, last = month_bounds(anchor_date)
+    days = summarize_date_range(first, last, load_day, as_of=as_of,
+                                load_flat_break_enabled=load_flat_break_enabled)
+    return MonthSummary(first, last, days,
+                        sum((day.net for day in days if day.net is not None), timedelta()),
+                        tuple(day.work_date for day in days if day.incomplete))
 
 
 def summarize_day(work_date: date, day: WorkDay, *, as_of: datetime,

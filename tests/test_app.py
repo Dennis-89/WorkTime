@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from unittest.mock import Mock
 
 import pytest
@@ -460,3 +460,69 @@ def test_options_and_corrections_do_not_change_each_other(context):
         assert store.list_correction_revisions(BASE.date()) == (1,)
         assert store.load_correction_revision(BASE.date(), 1).events == corrected
     assert app.day_summary(BASE.date()).net == timedelta(hours=8, minutes=45)
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_month_summary_reads_clock_once_and_does_not_mutate_data(context, historical):
+    import hashlib
+    app, clock, path = context
+    app.start_work()
+    clock.now += timedelta(hours=2)
+    if historical:
+        app.finish_work()
+        clock.now += timedelta(days=65)
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    calls = clock.calls
+    month = app.month_summary(BASE.date())
+    assert clock.calls == calls + 1
+    assert month.first_day == date(2026, 9, 1) and month.last_day == date(2026, 9, 30)
+    assert month.total_net == timedelta(hours=1, minutes=45)
+    assert month.incomplete_dates == ()
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+    assert month.days[-1] == app.day_summary(BASE.date())
+
+
+@pytest.mark.parametrize("start,end", [(date(2026, 10, 1), date(2026, 10, 1)),
+                                       (date(2026, 10, 15), date(2026, 11, 10)),
+                                       (date(2026, 12, 20), date(2027, 1, 10)),
+                                       (date(2028, 2, 1), date(2028, 2, 29))])
+def test_inclusive_range_clock_once_and_no_database_mutation(context, start, end):
+    app, clock, path = context
+    before = path.read_bytes()
+    calls = clock.calls
+    days = app.date_range_summaries(start, end)
+    assert clock.calls == calls + 1
+    assert tuple(day.work_date for day in days) == tuple(start + timedelta(days=i) for i in range((end-start).days + 1))
+    assert path.read_bytes() == before
+
+
+def test_range_uses_day_options_and_one_evaluation_instant(context):
+    app, clock, path = context
+    app.start_work()
+    clock.now += timedelta(hours=2)
+    days = app.date_range_summaries(BASE.date(), BASE.date())
+    assert days[0].net == timedelta(hours=1, minutes=45) and not days[0].incomplete
+    app.set_flat_break_enabled(BASE.date(), False)
+    assert app.date_range_summaries(BASE.date(), BASE.date())[0].net == timedelta(hours=2)
+    clock.now += timedelta(days=1)
+    assert app.date_range_summaries(BASE.date(), BASE.date())[0].net is None
+
+
+def test_invalid_range_rejected_without_mutation_or_clock_read(context):
+    app, clock, path = context
+    before, calls = path.read_bytes(), clock.calls
+    with pytest.raises(DomainError, match='Startdatum'):
+        app.date_range_summaries(BASE.date()+timedelta(days=1), BASE.date())
+    assert path.read_bytes() == before and clock.calls == calls
+    for invalid in (None, BASE, '2026-10-01'):
+        with pytest.raises(TypeError):
+            app.date_range_summaries(invalid, BASE.date())
+
+
+def test_month_and_range_reject_closed_application(context):
+    app, clock, path = context
+    app.close()
+    for method, args in ((app.month_summary, (BASE.date(),)),
+                         (app.date_range_summaries, (BASE.date(), BASE.date()))):
+        with pytest.raises(RuntimeError, match='geschlossen'):
+            method(*args)

@@ -251,6 +251,18 @@ Die Wochenübersicht zeigt:
 - aktuelle Woche
 - Folgewoche
 
+## Monatsübersicht und CSV-Export
+
+**Monatsübersicht** ist in jedem WorkTime-Zustand im Tray verfügbar. Sie öffnet den aktuellen Monat. Mit **Vormonat**, **Dieser Monat** und **Folgemonat** lassen sich auch historische Monate anzeigen, einschließlich Monats-/Jahreswechsel und Schaltjahren.
+
+Die Tabelle enthält jeden Kalendertag mit **Datum**, **Arbeitsbeginn**, **Arbeitsende**, **Pause**, **Pauschalpause**, **Netto**, **Zustand** und **Hinweis**. Unter der Tabelle steht **Gesamt Netto** für den Monat. Tageswerte berücksichtigen die gespeicherte Pauschalpause unverändert; historische unvollständige Tage werden gekennzeichnet und nicht in die Summe eingerechnet.
+
+**CSV exportieren** öffnet einen Dialog mit frei wählbarem Start- und Enddatum im Format `JJJJ-MM-TT`. Beide Grenzen zählen zum Export. Der Defaultbereich entspricht dem aktuell dargestellten Monat; Teilmonate und Zeiträume über Monats- oder Jahresgrenzen sind ebenfalls möglich.
+
+Nach **Exportieren** erscheint der normale **Speichern unter**-Dialog. Der vorgeschlagene Dateiname lautet beispielsweise `worktime_2026-10-01_bis_2026-10-31.csv`; Speicherort und Name können geändert werden. Ungültige Daten werden mit einer Fehlermeldung abgelehnt. **Abbrechen** im Export- oder Speicherdialog erzeugt keine Datei.
+
+Die CSV verwendet **UTF-8 mit BOM** und **Semikolon** als Trennzeichen für deutsche Excel-Installationen. Sie enthält genau eine Kopfzeile und jeden Kalendertag des vollständigen gewählten Zeitraums, einschließlich arbeitsfreier Tage; keine Gesamtzeile. Datum wird als `dd.MM.yyyy`, Zeiten als `HH:MM` ausgegeben. Fehlende Start-/Endzeiten und nicht berechenbare Zeiten bleiben leer; unvollständige Tage behalten ihren Hinweis. Der Export verändert keine Arbeitszeitdaten.
+
 ## Korrekturen
 
 Arbeitszeiten können manuell korrigiert werden.

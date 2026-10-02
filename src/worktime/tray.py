@@ -22,6 +22,7 @@ class TrayAction(Enum):
     FINISH = "Feierabend"
     DAY = "Tagesübersicht"
     WEEK = "Wochenübersicht"
+    MONTH = "Monatsübersicht"
     QUIT = "Anwendung beenden"
 
 
@@ -39,7 +40,7 @@ def menu_state(state: WorkState) -> MenuState:
         WorkState.PAUSED: MenuState("Pause", (TrayAction.RESUME, TrayAction.FINISH, TrayAction.QUIT)),
         WorkState.FINISHED: MenuState("Feierabend", (TrayAction.QUIT,)),
     }[state]
-    return MenuState(view.label, view.actions[:-1] + (TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT))
+    return MenuState(view.label, view.actions[:-1] + (TrayAction.DAY, TrayAction.WEEK, TrayAction.MONTH, TrayAction.QUIT))
 
 
 def create_image():
@@ -108,7 +109,7 @@ class TrayController:
             return menu_state(self._app.status().day.state)
         except Exception:
             logger.exception("WorkTime-Status konnte nicht gelesen werden.")
-            return MenuState("Status nicht verfügbar", (TrayAction.DAY, TrayAction.WEEK, TrayAction.QUIT))
+            return MenuState("Status nicht verfügbar", (TrayAction.DAY, TrayAction.WEEK, TrayAction.MONTH, TrayAction.QUIT))
 
     def refresh(self, icon) -> None:
         with self._lock:
@@ -133,8 +134,9 @@ class TrayController:
             if self._closed:
                 return
             try:
-                if action in (TrayAction.DAY, TrayAction.WEEK):
-                    (self._ui.open_day if action is TrayAction.DAY else self._ui.open_week)()
+                if action in (TrayAction.DAY, TrayAction.WEEK, TrayAction.MONTH):
+                    {TrayAction.DAY: self._ui.open_day, TrayAction.WEEK: self._ui.open_week,
+                     TrayAction.MONTH: self._ui.open_month}[action]()
                     return
                 {
                     TrayAction.START: self._app.start_work,

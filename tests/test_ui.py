@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from threading import Event, get_ident
 from unittest.mock import Mock
 
@@ -115,6 +115,8 @@ def test_ui_lifecycle_dispatch_and_close_stay_on_owner_thread_without_desktop(tm
             self.root.record("day")
         def open_week(self):
             self.root.record("week")
+        def open_month(self):
+            self.root.record("month")
             received.set()
         def show_error(self, message):
             raise AssertionError(message)
@@ -125,6 +127,7 @@ def test_ui_lifecycle_dispatch_and_close_stay_on_owner_thread_without_desktop(tm
         service.start()
         service.open_day()
         service.open_week()
+        service.open_month()
         assert received.wait(3)
     finally:
         service.stop()
@@ -134,7 +137,7 @@ def test_ui_lifecycle_dispatch_and_close_stay_on_owner_thread_without_desktop(tm
     assert calls[0][1] != get_ident()
     operations = [operation for operation, _ in calls]
     assert operations.count("create") == operations.count("destroy") == 1
-    assert operations.index("day") < operations.index("week") < operations.index("quit") < operations.index("destroy")
+    assert operations.index("day") < operations.index("week") < operations.index("month") < operations.index("quit") < operations.index("destroy")
     assert app.raw_events(BASE.date()) == before
     assert app.status().day.state is WorkState.WORKING
     app.close()
@@ -180,6 +183,7 @@ class Widget:
     def __init__(self, parent=None, **kwargs):
         self.parent, self.kwargs = parent, kwargs
         self.children, self.destroyed = [], False
+        self.headings, self.rows = {}, []
         if parent is not None:
             parent.children.append(self)
     def pack(self, **kwargs):
@@ -196,12 +200,14 @@ class Widget:
         pass
     def yview(self, *args):
         pass
+    def xview(self, *args):
+        pass
     def set(self, *args):
         pass
-    def heading(self, *args, **kwargs):
-        pass
+    def heading(self, key, **kwargs):
+        self.headings[key] = kwargs
     def insert(self, *args, **kwargs):
-        pass
+        self.rows.append(kwargs['values'])
     def winfo_children(self):
         return list(self.children)
     def destroy(self):
@@ -235,7 +241,153 @@ def fake_windows(app):
     windows.tk = SimpleNamespace(Toplevel=Widget, Canvas=Widget, StringVar=Variable, BooleanVar=Variable)
     windows.ttk = SimpleNamespace(**{name: Widget for name in
                                     ('Frame', 'Label', 'Button', 'Checkbutton', 'Entry', 'Scrollbar', 'Treeview')})
+    windows.filedialog = Mock()
     return windows
+
+
+@pytest.mark.parametrize('stamp,title,count,back,forward', [
+    (datetime(2026,10,15,tzinfo=timezone.utc),'Oktober 2026',31,'September 2026','November 2026'),
+    (datetime(2027,1,15,tzinfo=timezone.utc),'Januar 2027',31,'Dezember 2026','Februar 2027'),
+    (datetime(2026,12,15,tzinfo=timezone.utc),'Dezember 2026',31,'November 2026','Januar 2027'),
+    (datetime(2028,2,15,tzinfo=timezone.utc),'Februar 2028',29,'Januar 2028','März 2028')])
+def test_month_window_calendar_navigation_title_and_columns(tmp_path,stamp,title,count,back,forward):
+    from worktime.export import CSV_HEADER
+    app=WorkTimeApp(tmp_path/'month-ui.db',clock=lambda:stamp)
+    windows=fake_windows(app)
+    try:
+        windows.open_month()
+        window=windows.root.children[0]
+        assert window.caption==title
+        table=next(w for w in widget_tree(window) if w.kwargs.get('columns')==CSV_HEADER)
+        assert tuple(table.headings)==CSV_HEADER and len(table.rows)==count
+        assert table.rows[0][0]==stamp.replace(day=1).strftime('%d.%m.%Y')
+        assert table.rows[-1][0]==stamp.replace(day=count).strftime('%d.%m.%Y')
+        assert control(window,'Gesamt Netto: 00:00')
+        assert control(window,'CSV exportieren')
+        control(window,'Vormonat').kwargs['command']()
+        assert window.caption==back
+        control(window,'Dieser Monat').kwargs['command']()
+        assert window.caption==title
+        control(window,'Folgemonat').kwargs['command']()
+        assert window.caption==forward
+        control(window,'Vormonat').kwargs['command']()
+        assert window.caption==title
+        assert not window.destroyed
+    finally:
+        app.close()
+
+
+def export_dialog(windows):
+    windows.open_month()
+    month=windows.root.children[0]
+    control(month,'CSV exportieren').kwargs['command']()
+    dialog=next(w for w in month.children if hasattr(w,'caption'))
+    entries=[w.kwargs['textvariable'] for w in widget_tree(dialog) if 'textvariable' in w.kwargs]
+    return month,dialog,entries
+
+
+def test_month_values_and_export_defaults_follow_displayed_historical_month(tmp_path):
+    from worktime.domain import WorkEvent, EventType
+    from worktime.export import CSV_HEADER
+    app=WorkTimeApp(tmp_path/'history-ui.db',clock=lambda:BASE+timedelta(days=60))
+    app.correct_day(BASE.date(),(WorkEvent(EventType.WORK_START,BASE),WorkEvent(EventType.WORK_END,BASE+timedelta(hours=8))))
+    windows=fake_windows(app)
+    try:
+        windows.open_month()
+        month=windows.root.children[0]
+        assert month.caption=='November 2026'
+        control(month,'Vormonat').kwargs['command']()
+        assert month.caption=='Oktober 2026'
+        assert control(month,'Gesamt Netto: 07:45')
+        table=next(w for w in widget_tree(month) if w.kwargs.get('columns')==CSV_HEADER)
+        assert table.rows[0]==('01.10.2026','08:00','16:00','00:00','00:15','07:45','Feierabend','')
+        control(month,'CSV exportieren').kwargs['command']()
+        dialog=next(w for w in month.children if hasattr(w,'caption'))
+        entries=[w.kwargs['textvariable'].get() for w in widget_tree(dialog) if 'textvariable' in w.kwargs]
+        assert entries==['2026-10-01','2026-10-31']
+    finally:
+        app.close()
+
+
+@pytest.mark.parametrize('start,end,label',[('bad','2026-10-31','Startdatum'),
+                                          ('2026-02-30','2026-10-31','Startdatum'),
+                                          ('2026-10-01','bad','Enddatum'),
+                                          ('2026-10-01','2026-02-30','Enddatum'),
+                                          ('2026-11-01','2026-10-31','Startdatum')])
+def test_export_dialog_validation_precedes_file_dialog(tmp_path,start,end,label):
+    app=WorkTimeApp(tmp_path/'validate-ui.db',clock=lambda:BASE)
+    tracked=Mock(wraps=app)
+    windows=fake_windows(tracked)
+    windows.show_error=Mock()
+    try:
+        month,dialog,entries=export_dialog(windows)
+        entries[0].set(start)
+        entries[1].set(end)
+        tracked.reset_mock()
+        before=(tmp_path/'validate-ui.db').read_bytes()
+        control(dialog,'Exportieren').kwargs['command']()
+        assert label in windows.show_error.call_args.args[0]
+        windows.filedialog.asksaveasfilename.assert_not_called()
+        assert tracked.mock_calls==[] and not dialog.destroyed
+        assert (tmp_path/'validate-ui.db').read_bytes()==before
+    finally:
+        app.close()
+
+
+@pytest.mark.parametrize('cancel_save',[False,True])
+def test_export_cancellation_creates_no_file_or_app_request(tmp_path,cancel_save):
+    app=WorkTimeApp(tmp_path/'cancel-ui.db',clock=lambda:BASE)
+    tracked=Mock(wraps=app)
+    windows=fake_windows(tracked)
+    windows.show_error=Mock()
+    windows.filedialog.asksaveasfilename.return_value=''
+    try:
+        month,dialog,entries=export_dialog(windows)
+        before=set(tmp_path.iterdir()),(tmp_path/'cancel-ui.db').read_bytes()
+        tracked.reset_mock()
+        control(dialog,'Exportieren' if cancel_save else 'Abbrechen').kwargs['command']()
+        assert tracked.mock_calls==[]
+        assert (set(tmp_path.iterdir()),(tmp_path/'cancel-ui.db').read_bytes())==before
+        windows.show_error.assert_not_called()
+        if cancel_save:
+            windows.filedialog.asksaveasfilename.assert_called_once()
+            assert not dialog.destroyed
+        else:
+            windows.filedialog.asksaveasfilename.assert_not_called()
+            assert dialog.destroyed
+    finally:
+        app.close()
+
+
+def test_export_dialog_writes_selected_file_with_selected_inclusive_range(tmp_path):
+    import csv
+    from worktime.export import CSV_HEADER
+    from unittest.mock import call
+    app=WorkTimeApp(tmp_path/'save-ui.db',clock=lambda:BASE)
+    tracked=Mock(wraps=app)
+    windows=fake_windows(tracked)
+    output=tmp_path/'user-chosen-name.csv'
+    windows.filedialog.asksaveasfilename.return_value=str(output)
+    try:
+        month,dialog,entries=export_dialog(windows)
+        assert [v.get() for v in entries]==['2026-10-01','2026-10-31']
+        entries[0].set('2026-10-31')
+        entries[1].set('2026-11-01')
+        tracked.reset_mock()
+        before=(tmp_path/'save-ui.db').read_bytes()
+        control(dialog,'Exportieren').kwargs['command']()
+        assert tracked.mock_calls==[call.date_range_summaries(date(2026,10,31),date(2026,11,1))]
+        options=windows.filedialog.asksaveasfilename.call_args.kwargs
+        assert options['initialfile']=='worktime_2026-10-31_bis_2026-11-01.csv'
+        assert options['parent'] is dialog and options['defaultextension']=='.csv'
+        with output.open(encoding='utf-8-sig',newline='') as handle:
+            rows=list(csv.reader(handle,delimiter=';'))
+        assert rows[0]==list(CSV_HEADER) and len(rows)==3
+        assert rows[1][0]=='31.10.2026' and rows[2][0]=='01.11.2026'
+        assert dialog.destroyed and not month.destroyed
+        assert (tmp_path/'save-ui.db').read_bytes()==before
+    finally:
+        app.close()
 
 
 def control(window, text):
