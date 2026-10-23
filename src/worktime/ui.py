@@ -40,6 +40,7 @@ def day_view(summary) -> DayView:
         ("Arbeitsende", stamp_text(summary.end)),
         ("Brutto", duration_text(summary.gross)),
         ("Pause", duration_text(summary.pause)),
+        ("Davon automatische Mittagspause", duration_text(summary.lunch)),
         ("Pauschalpause", duration_text(summary.flat_break)),
         ("Netto", duration_text(summary.net)),
         ("Zustand", LABELS[summary.state]),
@@ -90,6 +91,7 @@ class EditorInput:
     start: TimeInput
     end: TimeInput
     pauses: tuple[tuple[TimeInput, TimeInput], ...] = ()
+    auto_lunch_minutes: str | None = None
 
 
 def editor_events(values: EditorInput, *, allow_open_pause=False, resolver=windows_local_time):
@@ -114,6 +116,11 @@ class EditorController:
 
     def save(self, values: EditorInput):
         events = editor_events(values, allow_open_pause=self.allow_open_pause, resolver=self.resolver)
+        if values.auto_lunch_minutes is not None:
+            text = values.auto_lunch_minutes.strip()
+            if not text or not text.isascii() or not text.isdecimal():
+                raise DomainError("Mittagspause bitte als nichtnegative ganze Minuten eingeben.")
+            return self.app.correct_day(self.work_date, events, auto_lunch_minutes=int(text))
         return self.app.correct_day(self.work_date, events)
 
 
@@ -323,6 +330,16 @@ class TkWindows:
             return entry(row, stamp)
 
         start, end = field("Arbeitsbeginn", edit.start), field("Arbeitsende", edit.end)
+        lunch_value = None
+        if summary.auto_lunch_minutes is not None:
+            row = self.ttk.Frame(frame)
+            row.pack(anchor="w", pady=3)
+            self.ttk.Label(row, text="Automatische Mittagspause (Minuten)").pack(side="left")
+            lunch_value = self.tk.StringVar(master=window, value=str(summary.auto_lunch_minutes))
+            self.ttk.Entry(row, textvariable=lunch_value, width=7).pack(side="left")
+            self.ttk.Label(frame, text=("Standard: 30 Minuten (12:00–12:30). "
+                "Nach einer manuellen Pause zählen nur die realen Pausen. "
+                "Die 15-Minuten-Pauschalpause bleibt zusätzlich.")).pack()
         rows = []
         pause_area = self.ttk.Frame(frame)
         pause_area.pack()
@@ -352,7 +369,8 @@ class TkWindows:
         def save():
             try:
                 controller.save(EditorInput(value(start), value(end),
-                                            tuple((value(a), value(b)) for a, b in rows)))
+                                            tuple((value(a), value(b)) for a, b in rows),
+                                            lunch_value.get() if lunch_value is not None else None))
             except Exception as error:
                 error_text.set(str(error))
                 return

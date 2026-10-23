@@ -1,12 +1,12 @@
 """Local SQLite persistence of ordered domain events."""
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import date, datetime
 from os import PathLike
 import sqlite3
 from typing import Self
 
-from worktime.domain import DomainError, EventType, WorkDay, WorkEvent
+from worktime.domain import DomainError, EventType, WorkDay, WorkEvent, WorkState
 
 
 _SCHEMA = """
@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS workday_correction_events (
 CREATE TABLE IF NOT EXISTS workday_settings (
     work_date TEXT PRIMARY KEY,
     flat_break_enabled INTEGER NOT NULL CHECK (flat_break_enabled IN (0, 1))
+);
+CREATE TABLE IF NOT EXISTS workday_lunch (
+    work_date TEXT PRIMARY KEY,
+    auto_minutes INTEGER NOT NULL CHECK (auto_minutes >= 0),
+    manual_pause_seen INTEGER NOT NULL DEFAULT 0 CHECK (manual_pause_seen IN (0, 1))
 );
 """
 
@@ -94,26 +99,67 @@ class SQLiteEventStore:
                 (key, int(enabled)),
             )
 
-    def append_event(self, work_date: date, event: WorkEvent) -> WorkDay:
+    def append_event(self, work_date: date, event: WorkEvent, *,
+                     new_day: bool = False) -> WorkDay:
         """Validate with WorkDay.apply, then atomically persist the event.
 
         Domain and SQLite errors propagate. Any failure rolls back the entire
         append, including an insert that failed after changing a row.
         """
-        key = _date_key(work_date)
         with self._connection:
             self._connection.execute("BEGIN IMMEDIATE")
-            day = self.load_day(work_date)
-            day.apply(event)
+            return self._append_event(work_date, event, new_day=new_day)
+
+    def _append_event(self, work_date: date, event: WorkEvent, *,
+                      new_day: bool = False) -> WorkDay:
+        """Append inside an already held write transaction."""
+        key = _date_key(work_date)
+        day = self.load_day(work_date)
+        day.apply(event)
+        self._connection.execute(
+            "INSERT INTO work_events VALUES (?, ?, ?, ?)",
+            (key, self._raw_sequence(key) + 1, event.kind.value, event.timestamp.isoformat()),
+        )
+        if new_day:
+            if event.kind is not EventType.WORK_START:
+                raise DomainError("Mittagspausenmetadaten benötigen einen neuen Arbeitsbeginn.")
+            self._connection.execute("INSERT INTO workday_lunch VALUES (?, 30, 0)", (key,))
+        if event.kind is EventType.PAUSE_START:
             self._connection.execute(
-                "INSERT INTO work_events "
-                "(work_date, sequence, event_type, timestamp) VALUES (?, ?, ?, ?)",
-                (key, self._raw_sequence(key) + 1, event.kind.value, event.timestamp.isoformat()),
-            )
-        return day
+                "UPDATE workday_lunch SET manual_pause_seen = 1 WHERE work_date = ?", (key,))
+        return self.load_day(work_date)
+
+    def auto_start(self, now: datetime,
+                   day_end: Callable[[date], datetime]) -> tuple[date, WorkDay]:
+        """Close earlier open days and start today atomically, across connections."""
+        with self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            for work_date in self.list_work_dates():
+                if work_date >= now.date():
+                    continue
+                day = self.load_day(work_date)
+                if day.state not in (WorkState.WORKING, WorkState.PAUSED):
+                    continue
+                end = day_end(work_date)
+                if day.state is WorkState.PAUSED:
+                    self._append_event(work_date, WorkEvent(EventType.PAUSE_END, end))
+                self._append_event(work_date, WorkEvent(EventType.WORK_END, end))
+            day = self.load_day(now.date())
+            if day.state is WorkState.NOT_STARTED:
+                day = self._append_event(now.date(), WorkEvent(EventType.WORK_START, now),
+                                         new_day=True)
+            return now.date(), day
 
     def load_day(self, work_date: date) -> WorkDay:
         """Read the latest snapshot and raw tail in one consistent SQL read."""
+        if self._connection.in_transaction:
+            return self._load_day(work_date)
+        with self._connection:
+            self._connection.execute("BEGIN")
+            return self._load_day(work_date)
+
+    def _load_day(self, work_date: date) -> WorkDay:
+        """Keep events and lunch metadata in the same read snapshot."""
         rows = self._connection.execute(
             """
             WITH latest AS (
@@ -132,7 +178,15 @@ class SQLiteEventStore:
             """,
             (_date_key(work_date),) * 3,
         ).fetchall()
-        return self._reconstruct(rows)
+        day = self._reconstruct(rows)
+        metadata = self._connection.execute(
+            "SELECT auto_minutes, manual_pause_seen FROM workday_lunch WHERE work_date = ?",
+            (_date_key(work_date),),
+        ).fetchone()
+        if metadata is not None:
+            day.auto_lunch_minutes, seen = metadata
+            day.manual_pause_seen = bool(seen)
+        return day
 
     @staticmethod
     def _reconstruct(rows) -> WorkDay:
@@ -157,7 +211,8 @@ class SQLiteEventStore:
             (key,),
         ).fetchone()[0]
 
-    def save_correction(self, work_date: date, events: Iterable[WorkEvent]) -> WorkDay:
+    def save_correction(self, work_date: date, events: Iterable[WorkEvent], *,
+                        auto_lunch_minutes: int | None = None) -> WorkDay:
         """Append a validated snapshot and its raw cutoff in one transaction."""
         key = _date_key(work_date)
         with self._connection:
@@ -167,6 +222,15 @@ class SQLiteEventStore:
                 day.apply(event)
             if not day.events:
                 raise DomainError("Eine leere Korrektur ist nicht erlaubt.")
+            if auto_lunch_minutes is not None:
+                if type(auto_lunch_minutes) is not int or auto_lunch_minutes < 0:
+                    raise DomainError("Mittagspause benötigt eine nichtnegative ganze Minutenzahl.")
+                updated = self._connection.execute(
+                    "UPDATE workday_lunch SET auto_minutes = ? WHERE work_date = ?",
+                    (auto_lunch_minutes, key),
+                )
+                if updated.rowcount != 1:
+                    raise DomainError("Legacy-Tage erhalten keine WP-009-Mittagspause.")
             revision = self._connection.execute(
                 "SELECT COALESCE(MAX(revision), 0) + 1 FROM workday_corrections "
                 "WHERE work_date = ?", (key,),
@@ -180,7 +244,7 @@ class SQLiteEventStore:
                 ((key, revision, sequence, event.kind.value, event.timestamp.isoformat())
                  for sequence, event in enumerate(day.events, 1)),
             )
-        return day
+        return self.load_day(work_date)
 
     def list_correction_revisions(self, work_date: date) -> tuple[int, ...]:
         return tuple(row[0] for row in self._connection.execute(

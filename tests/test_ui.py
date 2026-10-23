@@ -245,6 +245,49 @@ def fake_windows(app):
     return windows
 
 
+@pytest.mark.parametrize('new_day', [False, True])
+def test_existing_correction_dialog_lunch_field_only_for_new_days(tmp_path, new_day):
+    from worktime.domain import EventType, WorkEvent
+    now = BASE
+    app = WorkTimeApp(tmp_path / 'lunch-editor.db', clock=lambda: now)
+    try:
+        if new_day:
+            app.start_work()
+            now += timedelta(hours=8)
+            app.finish_work()
+        else:
+            app.correct_day(BASE.date(), (WorkEvent(EventType.WORK_START, BASE),
+                WorkEvent(EventType.WORK_END, BASE + timedelta(hours=8))))
+        windows = fake_windows(app)
+        refreshed = Mock()
+        windows._editor(app.day_summary(BASE.date()), refreshed, windows.root)
+        dialog = windows.root.children[0]
+        lunch_rows = [widget for widget in widget_tree(dialog)
+                      if widget.kwargs.get('text') == 'Automatische Mittagspause (Minuten)']
+        assert bool(lunch_rows) is new_day
+        if new_day:
+            variable = next(widget.kwargs['textvariable']
+                            for widget in lunch_rows[0].parent.children
+                            if 'textvariable' in widget.kwargs)
+            assert variable.get() == '30'
+            variable.set('20')
+            control(dialog, 'Speichern').kwargs['command']()
+            refreshed.assert_called_once_with()
+            assert app.day_summary(BASE.date()).pause == timedelta(minutes=20)
+            assert dialog.destroyed
+    finally:
+        app.close()
+
+
+@pytest.mark.parametrize('text', ['', '-1', '1.5', 'abc'])
+def test_invalid_lunch_editor_value_never_calls_app(text):
+    app = Mock()
+    values = EditorInput(input_at('08:00'), input_at('16:00'), auto_lunch_minutes=text)
+    with pytest.raises(DomainError):
+        EditorController(app, BASE.date(), resolver=utc).save(values)
+    assert app.mock_calls == []
+
+
 @pytest.mark.parametrize('stamp,title,count,back,forward', [
     (datetime(2026,10,15,tzinfo=timezone.utc),'Oktober 2026',31,'September 2026','November 2026'),
     (datetime(2027,1,15,tzinfo=timezone.utc),'Januar 2027',31,'Dezember 2026','Februar 2027'),

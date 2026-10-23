@@ -57,7 +57,10 @@ _TRANSITIONS = {
 class WorkDay:
     """An ordered event history; rejected events leave it unchanged."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, auto_lunch_minutes: int | None = None,
+                 manual_pause_seen: bool = False) -> None:
+        self.auto_lunch_minutes = auto_lunch_minutes
+        self.manual_pause_seen = manual_pause_seen
         self._state = WorkState.NOT_STARTED
         self._events: list[WorkEvent] = []
 

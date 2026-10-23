@@ -9,6 +9,7 @@ from threading import RLock
 from worktime.domain import DomainError, EventType, WorkDay, WorkEvent, WorkState
 from worktime.storage import SQLiteEventStore
 from worktime.paths import database_path
+from worktime.correction import windows_local_time
 from worktime.summary import DaySummary, WeekSummary, summarize_day, summarize_week
 from worktime.summary import MonthSummary, summarize_month, summarize_date_range, validate_date_range
 
@@ -31,9 +32,11 @@ class WorkTimeApp:
     disables further calls; each store connection has already been closed.
     """
 
-    def __init__(self, database_path: str | Path, *, clock: Callable[[], datetime] = local_now):
+    def __init__(self, database_path: str | Path, *, clock: Callable[[], datetime] = local_now,
+                 time_resolver: Callable[[datetime], datetime] = windows_local_time):
         self._database_path = Path(database_path)
         self._clock = clock
+        self._time_resolver = time_resolver
         self._closed = False
         self._operations = RLock()
         with SQLiteEventStore(self._database_path):
@@ -69,24 +72,20 @@ class WorkTimeApp:
             event = WorkEvent(kind, now)
             with SQLiteEventStore(self._database_path) as store:
                 selected = self._select_day(store, now)
-                day = store.append_event(selected.work_date, event)
+                day = store.append_event(selected.work_date, event,
+                                         new_day=kind is EventType.WORK_START)
                 return AppStatus(selected.work_date, day)
 
     def auto_start_if_needed(self) -> AppStatus:
-        """Start only an unstarted selected day, using one clock reading.
-
-        Serialize with manual use cases on this application instance. Open
-        previous days and today's finished day are returned without a write.
-        """
+        """Close earlier open days at 23:59 and start today at this trigger."""
         with self._operations:
             now = self._now()
             with SQLiteEventStore(self._database_path) as store:
-                selected = self._select_day(store, now)
-                if selected.day.state is not WorkState.NOT_STARTED:
-                    return selected
-                event = WorkEvent(EventType.WORK_START, now)
-                day = store.append_event(selected.work_date, event)
-                return AppStatus(selected.work_date, day)
+                def day_end(work_date):
+                    return self._time_resolver(datetime(work_date.year, work_date.month,
+                                                        work_date.day, 23, 59))
+                work_date, day = store.auto_start(now, day_end)
+                return AppStatus(work_date, day)
 
     def start_work(self) -> AppStatus:
         return self._append(EventType.WORK_START)
@@ -152,12 +151,14 @@ class WorkTimeApp:
             with SQLiteEventStore(self._database_path) as store:
                 store.set_flat_break_enabled(work_date, enabled)
 
-    def correct_day(self, work_date: date, events: Iterable[WorkEvent]) -> AppStatus:
+    def correct_day(self, work_date: date, events: Iterable[WorkEvent], *,
+                    auto_lunch_minutes: int | None = None) -> AppStatus:
         with self._operations:
             if self._closed:
                 raise RuntimeError("WorkTime ist bereits geschlossen.")
             with SQLiteEventStore(self._database_path) as store:
-                return AppStatus(work_date, store.save_correction(work_date, events))
+                return AppStatus(work_date, store.save_correction(
+                    work_date, events, auto_lunch_minutes=auto_lunch_minutes))
 
     def raw_events(self, work_date: date) -> tuple[WorkEvent, ...]:
         with self._operations:

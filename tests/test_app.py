@@ -305,7 +305,7 @@ def test_auto_start_finished_previous_day_uses_local_not_utc_date(context):
 
 
 @pytest.mark.parametrize("paused", [False, True])
-def test_auto_start_preserves_open_previous_day_after_restart(context, paused):
+def test_auto_start_closes_open_previous_day_after_restart(context, paused):
     app, clock, path = context
     app.start_work()
     if paused:
@@ -316,10 +316,13 @@ def test_auto_start_preserves_open_previous_day_after_restart(context, paused):
     reopened = WorkTimeApp(path, clock=clock)
     try:
         result = reopened.auto_start_if_needed()
-        assert result.work_date == BASE.date()
-        assert result.day.state is (WorkState.PAUSED if paused else WorkState.WORKING)
-        assert result.day.events == events
-        assert saved(path, clock.now.date()).events == ()
+        assert result.work_date == clock.now.date()
+        assert result.day.state is WorkState.WORKING
+        assert len(result.day.events) == 1
+        old = saved(path)
+        assert old.events[:len(events)] == events
+        assert old.state is WorkState.FINISHED
+        assert old.events[-1].timestamp.strftime('%H:%M') == '23:59'
     finally:
         reopened.close()
 
@@ -380,10 +383,10 @@ def test_day_and_week_summaries_read_clock_once(context):
     calls = clock.calls
     summary = app.day_summary(BASE.date())
     assert clock.calls == calls + 1
-    assert summary.net == timedelta(hours=1, minutes=45)
+    assert summary.net == timedelta(hours=1, minutes=15)
     weekly = app.week_summary(BASE.date())
     assert clock.calls == calls + 2
-    assert weekly.total_net == timedelta(hours=1, minutes=45)
+    assert weekly.total_net == timedelta(hours=1, minutes=15)
     clock.now += timedelta(days=1)
     assert app.day_summary(BASE.date()).incomplete
     assert app.week_summary(BASE.date()).total_net == timedelta()
@@ -424,17 +427,17 @@ def test_daily_options_survive_app_reopen_and_apply_per_day(context):
         app.finish_work()
     first, second = BASE.date(), clock.now.date()
     assert app.flat_break_enabled(first) is True
-    assert app.day_summary(first).net == timedelta(hours=7, minutes=45)
+    assert app.day_summary(first).net == timedelta(hours=7, minutes=15)
     app.set_flat_break_enabled(first, False)
-    assert app.day_summary(first).net == timedelta(hours=8)
-    assert app.day_summary(second).net == timedelta(hours=7, minutes=45)
-    assert app.week_summary(first).total_net == timedelta(hours=15, minutes=45)
+    assert app.day_summary(first).net == timedelta(hours=7, minutes=30)
+    assert app.day_summary(second).net == timedelta(hours=7, minutes=15)
+    assert app.week_summary(first).total_net == timedelta(hours=14, minutes=45)
     app.close()
     with_app = WorkTimeApp(path, clock=clock)
     try:
         assert with_app.flat_break_enabled(first) is False
         assert with_app.flat_break_enabled(second) is True
-        assert with_app.week_summary(first).total_net == timedelta(hours=15, minutes=45)
+        assert with_app.week_summary(first).total_net == timedelta(hours=14, minutes=45)
         with_app.set_flat_break_enabled(first, True)
         assert with_app.day_summary(first).flat_break == timedelta(minutes=15)
     finally:
@@ -459,7 +462,7 @@ def test_options_and_corrections_do_not_change_each_other(context):
     with SQLiteEventStore(path) as store:
         assert store.list_correction_revisions(BASE.date()) == (1,)
         assert store.load_correction_revision(BASE.date(), 1).events == corrected
-    assert app.day_summary(BASE.date()).net == timedelta(hours=8, minutes=45)
+    assert app.day_summary(BASE.date()).net == timedelta(hours=8, minutes=15)
 
 
 @pytest.mark.parametrize("historical", [False, True])
@@ -476,7 +479,7 @@ def test_month_summary_reads_clock_once_and_does_not_mutate_data(context, histor
     month = app.month_summary(BASE.date())
     assert clock.calls == calls + 1
     assert month.first_day == date(2026, 9, 1) and month.last_day == date(2026, 9, 30)
-    assert month.total_net == timedelta(hours=1, minutes=45)
+    assert month.total_net == timedelta(hours=1, minutes=15)
     assert month.incomplete_dates == ()
     assert hashlib.sha256(path.read_bytes()).hexdigest() == before
     assert month.days[-1] == app.day_summary(BASE.date())
@@ -501,9 +504,9 @@ def test_range_uses_day_options_and_one_evaluation_instant(context):
     app.start_work()
     clock.now += timedelta(hours=2)
     days = app.date_range_summaries(BASE.date(), BASE.date())
-    assert days[0].net == timedelta(hours=1, minutes=45) and not days[0].incomplete
+    assert days[0].net == timedelta(hours=1, minutes=15) and not days[0].incomplete
     app.set_flat_break_enabled(BASE.date(), False)
-    assert app.date_range_summaries(BASE.date(), BASE.date())[0].net == timedelta(hours=2)
+    assert app.date_range_summaries(BASE.date(), BASE.date())[0].net == timedelta(hours=1, minutes=30)
     clock.now += timedelta(days=1)
     assert app.date_range_summaries(BASE.date(), BASE.date())[0].net is None
 

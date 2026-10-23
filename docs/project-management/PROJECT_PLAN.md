@@ -283,6 +283,16 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 - Abnahme: gezielte Summary-/App-/Tray-/UI-/CSV-Tests, komplette Regression und anschließender Benutzer-Praxistest.
 - Nachweis: .project-control/evidence/WP-008/REPORT.md.
 
+### WP-009: Automatische Mittagspause und automatischer Tagesabschluss
+
+- Status: abgeschlossen (technische Umsetzung und automatisierte Prüfung)
+- Ziel: Zusätzliche Standard-Mittagspause von 30 Minuten ausschließlich für eindeutig unter WP-009 neu gestartete Tage.
+- Erste tatsächlich ausgelöste manuelle Pause ersetzt den Standard vollständig; die 15-Minuten-Pauschalpause bleibt zusätzlich.
+- Bestehende Tageskorrektur erweitert um den persistenten automatischen Mittagspausenwert; gemeinsame Tageslogik für Tag, Woche, Monat und CSV.
+- Legacy-Schutz: Ohne Eintrag in der neuen additiven Tabelle workday_lunch bleibt die bisherige Berechnung unverändert. Kein Backfill, keine Migration bestehender fachlicher Arbeitszeitwerte, keine Änderung bestehender Events oder Korrekturen durch die Schemainitialisierung.
+- Ein offener früherer Tag wird beim späteren Login/Unlock/App-Start um 23:59 seines eigenen Tages abgeschlossen; danach normaler Auto-Start mit dem tatsächlichen Triggerzeitpunkt. FINISHED bleibt unverändert.
+- Nachweis: .project-control/evidence/WP-009/REPORT.md.
+
 ## Entscheidungsprotokoll
 
 - 2026-10-01 D-001: Python als Implementierungssprache gewählt.
@@ -294,8 +304,8 @@ Ein FINISHED-Tag bleibt für den betreffenden Kalendertag beendet.
 
 ## Fortschritt
 
-- Aktuelles Arbeitspaket: keines; WP-008 als Erweiterung nach MVP und WP-007 abgeschlossen
-- Letzter geprüfter Stand: WP-008 final technisch geprüft und Benutzer-Praxistest erfolgreich am 2026-10-02; HEAD vor WP-008-Commit: 2b441492fd85885eaf128aa8574386f0fe02acd4; WP-008 noch nicht committed
+- Aktuelles Arbeitspaket: keines; WP-009 technisch abgeschlossen
+- Letzter geprüfter Stand: WP-009 am 2026-10-23 technisch geprüft; 523 Tests erfolgreich, compileall, Imports und Diff-Prüfung erfolgreich; Basis-HEAD 3aa7193a45d4a7c3987b5c8d09e08e21bbecd82e, kein Commit und nichts gestaged
 - Blocker: keine
 - MVP-Status: abgeschlossen
-- Nächster Schritt: keiner; WP-008 abgeschlossen, keine offenen technischen oder praktischen Blocker; MVP und WP-007 bleiben abgeschlossen.
+- Nächster Schritt: Nutzerprüfung der WP-009-Änderungen anhand des REPORT.md; MVP und WP-007/WP-008 bleiben abgeschlossen.

@@ -25,6 +25,8 @@ class DaySummary:
     net: timedelta | None
     incomplete: bool
     flat_break: timedelta
+    auto_lunch_minutes: int | None = None
+    lunch: timedelta = timedelta()
 
 
 @dataclass(frozen=True)
@@ -108,16 +110,22 @@ def summarize_day(work_date: date, day: WorkDay, *, as_of: datetime,
         times = day.calculate(as_of)
     flat_break = (timedelta(minutes=15)
                   if day.state is not WorkState.NOT_STARTED and flat_break_enabled else timedelta())
+    lunch = (timedelta(minutes=day.auto_lunch_minutes)
+             if day.auto_lunch_minutes is not None and not day.manual_pause_seen
+             and not any(event.kind is EventType.PAUSE_START for event in day.events)
+             and day.state is not WorkState.NOT_STARTED else timedelta())
     return DaySummary(
         work_date, day.state,
         day.events[0].timestamp if day.events else None,
         day.events[-1].timestamp if day.state is WorkState.FINISHED else None,
         tuple(pauses),
         times.gross if times else None,
-        times.pause if times else None,
-        max(times.gross - times.pause - flat_break, timedelta()) if times else None,
+        times.pause + lunch if times else None,
+        max(times.gross - times.pause - lunch - flat_break, timedelta()) if times else None,
         incomplete,
         flat_break,
+        day.auto_lunch_minutes,
+        lunch,
     )
 
 
